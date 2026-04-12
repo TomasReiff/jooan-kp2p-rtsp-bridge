@@ -38,6 +38,10 @@ def _extract_parameter_sets(payload: bytes, is_hevc: bool) -> bytes:
     sc_list: list[tuple[int, int]] = []
     i = 0
     while i < n:
+        # Fast path: start codes always begin with 0x00.
+        if payload[i] != 0:
+            i += 1
+            continue
         if i + 4 <= n and payload[i : i + 4] == b"\x00\x00\x00\x01":
             sc_list.append((i, 4))
             i += 4
