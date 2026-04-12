@@ -33,7 +33,7 @@ class BridgeConfig:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Restream a Jooan/Juanvision kp2p camera as local RTSP for Frigate. "
+            "Restream a Jooan/Juanvision kp2p camera as local RTSP. "
             "Run one bridge process per camera."
         )
     )
@@ -51,14 +51,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rtsp-port", type=int, default=8554)
     parser.add_argument("--rtsp-path", default="cam3", help="RTSP path name, for example cam3.")
     parser.add_argument(
+        "--client-host",
         "--frigate-host",
+        dest="client_host",
         default="127.0.0.1",
-        help="Hostname or IP Frigate should use to reach this bridge. Only affects printed config.",
+        help="Hostname or IP clients should use to reach this bridge. Only affects printed output.",
     )
     parser.add_argument(
         "--camera-name",
         default="cam3",
-        help="Camera name to use when printing a Frigate YAML snippet.",
+        help="Camera name to use when printing an example client snippet.",
     )
     parser.add_argument(
         "--reconnect-delay",
@@ -67,9 +69,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seconds to wait before reconnecting after a source error.",
     )
     parser.add_argument(
+        "--print-example-config",
         "--print-frigate-config",
+        dest="print_example_config",
         action="store_true",
-        help="Print a minimal Frigate config snippet for this RTSP URL.",
+        help="Print a minimal example config snippet for this RTSP URL.",
     )
     parser.add_argument(
         "--dry-run",
@@ -100,13 +104,15 @@ def rtsp_listen_url(args: argparse.Namespace) -> str:
     return f"rtsp://{args.rtsp_listen_host}:{args.rtsp_port}/{args.rtsp_path.lstrip('/')}"
 
 
-def frigate_input_url(args: argparse.Namespace) -> str:
-    return f"rtsp://{args.frigate_host}:{args.rtsp_port}/{args.rtsp_path.lstrip('/')}"
+def client_rtsp_url(args: argparse.Namespace) -> str:
+    return f"rtsp://{args.client_host}:{args.rtsp_port}/{args.rtsp_path.lstrip('/')}"
 
 
-def print_frigate_config(args: argparse.Namespace) -> None:
-    url = frigate_input_url(args)
-    print("frigate_config_snippet:")
+def print_example_config(args: argparse.Namespace) -> None:
+    url = client_rtsp_url(args)
+    print("example_rtsp_url:")
+    print(f"  {url}")
+    print("example_frigate_yaml:")
     print(f"  cameras:")
     print(f"    {args.camera_name}:")
     print(f"      ffmpeg:")
@@ -236,9 +242,9 @@ def main() -> int:
     args = parser.parse_args()
 
     print(f"rtsp_listen_url={rtsp_listen_url(args)}")
-    print(f"frigate_input_url={frigate_input_url(args)}")
-    if args.print_frigate_config:
-        print_frigate_config(args)
+    print(f"client_rtsp_url={client_rtsp_url(args)}")
+    if args.print_example_config:
+        print_example_config(args)
 
     if args.dry_run:
         if shutil.which(args.ffmpeg_bin) is None and not Path(args.ffmpeg_bin).exists():

@@ -1,8 +1,8 @@
-# Jooan kp2p Frigate Bridge
+# Jooan kp2p RTSP Bridge
 
-This add-on restreams Jooan / Juanvision kp2p camera channels as local RTSP streams that Frigate can consume.
+This add-on restreams Jooan / Juanvision kp2p camera channels as local RTSP streams that standard RTSP clients can consume.
 
-This is a **Home Assistant add-on**, not a HACS integration. The add-on does the media bridging work; Frigate then reads the RTSP URLs it exposes.
+This is a **Home Assistant add-on**, not a HACS integration. The add-on does the media bridging work and exposes RTSP URLs for downstream consumers.
 
 ## What this add-on does
 
@@ -10,6 +10,7 @@ This is a **Home Assistant add-on**, not a HACS integration. The add-on does the
 - Opens one bridge process per enabled camera.
 - Uses FFmpeg to publish a local RTSP stream for each enabled camera.
 - Lets you configure the connection from the Home Assistant add-on UI.
+- Can feed Frigate, go2rtc, VLC, or other RTSP-capable software.
 
 ## Configuration
 
@@ -61,9 +62,9 @@ cameras:
     rtsp_path: cam16_sub
 ```
 
-## Frigate configuration
+## Consumer configuration
 
-Use the Home Assistant host IP or LAN IP in Frigate, **not** `127.0.0.1` unless Frigate runs in the same container.
+Use the Home Assistant host IP or LAN IP in your RTSP client, **not** `127.0.0.1` unless that client runs in the same container.
 
 Example if this add-on exposes:
 
@@ -71,7 +72,15 @@ Example if this add-on exposes:
 - `cam2` on `8555`
 - `cam3` on `8556`
 
-Then Frigate can use:
+Then a client can use:
+
+```text
+rtsp://HOME_ASSISTANT_HOST_IP:8554/cam1
+rtsp://HOME_ASSISTANT_HOST_IP:8555/cam2
+rtsp://HOME_ASSISTANT_HOST_IP:8556/cam3
+```
+
+For example, Frigate can use:
 
 ```yaml
 cameras:
@@ -111,16 +120,16 @@ https://github.com/TomasReiff/jooan-rtsp-brigde
 ```
 
 4. Refresh the add-on store.
-5. Open **Jooan kp2p Frigate Bridge**.
+5. Open **Jooan kp2p RTSP Bridge**.
 6. Set your credentials and define the `cameras` list you want to bridge.
 7. Start the add-on.
-8. Point Frigate to the RTSP URLs you configured.
+8. Point your RTSP client to the RTSP URLs you configured.
 
 ### Local repository install
 
 1. Copy this repository into your Home Assistant local add-ons directory.
 2. Refresh the add-on store.
-3. Open **Jooan kp2p Frigate Bridge**.
+3. Open **Jooan kp2p RTSP Bridge**.
 4. Set your credentials and define the `cameras` list you want to bridge.
 5. Start the add-on.
-6. Point Frigate to the RTSP URLs you configured.
+6. Point your RTSP client to the RTSP URLs you configured.

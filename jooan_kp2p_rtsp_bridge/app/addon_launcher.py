@@ -85,7 +85,7 @@ def build_camera_configs(options: dict) -> list[CameraConfig]:
 def build_bridge_command(options: dict, camera: CameraConfig) -> list[str]:
     command = [
         sys.executable,
-        "/app/frigate_rtsp_bridge.py",
+        "/app/rtsp_bridge.py",
         "--username",
         str(options.get("username", "admin")),
         "--password",
