@@ -48,17 +48,17 @@ cameras:
   - channel: 0
     enabled: true
     stream_id: 0
-    rtsp_port: 8554
+    rtsp_port: 8551
     rtsp_path: cam1
   - channel: 1
     enabled: true
     stream_id: 0
-    rtsp_port: 8555
+    rtsp_port: 8552
     rtsp_path: cam2
   - channel: 15
     enabled: true
     stream_id: 1
-    rtsp_port: 8569
+    rtsp_port: 8566
     rtsp_path: cam16_sub
 ```
 
@@ -68,16 +68,16 @@ Use the Home Assistant host IP or LAN IP in your RTSP client, **not** `127.0.0.1
 
 Example if this add-on exposes:
 
-- `cam1` on `8554`
-- `cam2` on `8555`
-- `cam3` on `8556`
+- `cam1` on `8551`
+- `cam2` on `8552`
+- `cam3` on `8553`
 
 Then a client can use:
 
 ```text
-rtsp://HOME_ASSISTANT_HOST_IP:8554/cam1
-rtsp://HOME_ASSISTANT_HOST_IP:8555/cam2
-rtsp://HOME_ASSISTANT_HOST_IP:8556/cam3
+rtsp://HOME_ASSISTANT_HOST_IP:8551/cam1
+rtsp://HOME_ASSISTANT_HOST_IP:8552/cam2
+rtsp://HOME_ASSISTANT_HOST_IP:8553/cam3
 ```
 
 For example, Frigate can use:
@@ -87,21 +87,21 @@ cameras:
   cam1:
     ffmpeg:
       inputs:
-        - path: rtsp://HOME_ASSISTANT_HOST_IP:8554/cam1
+        - path: rtsp://HOME_ASSISTANT_HOST_IP:8551/cam1
           roles:
             - detect
             - record
   cam2:
     ffmpeg:
       inputs:
-        - path: rtsp://HOME_ASSISTANT_HOST_IP:8555/cam2
+        - path: rtsp://HOME_ASSISTANT_HOST_IP:8552/cam2
           roles:
             - detect
             - record
   cam3:
     ffmpeg:
       inputs:
-        - path: rtsp://HOME_ASSISTANT_HOST_IP:8556/cam3
+        - path: rtsp://HOME_ASSISTANT_HOST_IP:8553/cam3
           roles:
             - detect
             - record

@@ -59,7 +59,7 @@ def build_camera_configs(options: dict) -> list[CameraConfig]:
                 CameraConfig(
                     channel=channel,
                     stream_id=_as_int(raw_camera.get("stream_id"), 0),
-                    rtsp_port=_as_int(raw_camera.get("rtsp_port"), 8554 + channel),
+                    rtsp_port=_as_int(raw_camera.get("rtsp_port"), 8551 + channel),
                     rtsp_path=str(raw_camera.get("rtsp_path", f"cam{channel + 1}")),
                 )
             )
@@ -75,7 +75,7 @@ def build_camera_configs(options: dict) -> list[CameraConfig]:
             CameraConfig(
                 channel=index - 1,
                 stream_id=_as_int(options.get(f"camera_{index}_stream_id"), 0),
-                rtsp_port=_as_int(options.get(f"camera_{index}_rtsp_port"), 8553 + index),
+                rtsp_port=_as_int(options.get(f"camera_{index}_rtsp_port"), 8550 + index),
                 rtsp_path=str(options.get(f"camera_{index}_rtsp_path", f"cam{index}")),
             )
         )
