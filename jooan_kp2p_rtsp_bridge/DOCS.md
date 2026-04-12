@@ -8,7 +8,7 @@ This is a **Home Assistant add-on**, not a HACS integration. The add-on does the
 
 - Connects to the DVR or camera using the vendor kp2p websocket protocol.
 - Opens one bridge process per enabled camera.
-- Uses FFmpeg to publish a local RTSP stream for each enabled camera.
+- Runs a [mediamtx](https://github.com/bluenviron/mediamtx) RTSP relay per camera to accept the encoded stream from FFmpeg and serve it to RTSP clients.
 - Lets you configure the connection from the Home Assistant add-on UI.
 - Can feed Frigate, go2rtc, VLC, or other RTSP-capable software.
 

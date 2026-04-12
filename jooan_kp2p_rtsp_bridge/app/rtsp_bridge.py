@@ -90,6 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stream-id", type=int, default=0, help="0=main stream, 1=substream.")
     parser.add_argument("--timeout", type=float, default=10.0)
     parser.add_argument("--ffmpeg-bin", default="ffmpeg", help="ffmpeg executable path.")
+    parser.add_argument("--mediamtx-bin", default="mediamtx", help="mediamtx executable path.")
     parser.add_argument("--ffmpeg-loglevel", default="warning")
     parser.add_argument("--rtsp-listen-host", default="0.0.0.0", help="Host ffmpeg should bind the RTSP server to.")
     parser.add_argument("--rtsp-port", type=int, default=8554)
@@ -169,6 +170,9 @@ def print_example_config(args: argparse.Namespace) -> None:
 
 def build_ffmpeg_command(args: argparse.Namespace, codec: str) -> list[str]:
     fmt = "hevc" if codec.upper() == "H265" else "h264"
+    # Push to the local mediamtx relay on loopback.  mediamtx then serves
+    # RTSP pull connections to clients on the same port.
+    push_url = f"rtsp://127.0.0.1:{args.rtsp_port}/{args.rtsp_path.lstrip('/')}"
     return [
         args.ffmpeg_bin,
         "-hide_banner",
@@ -191,9 +195,7 @@ def build_ffmpeg_command(args: argparse.Namespace, codec: str) -> list[str]:
         "rtsp",
         "-rtsp_transport",
         "tcp",
-        "-rtsp_flags",
-        "listen",
-        rtsp_listen_url(args),
+        push_url,
     ]
 
 
@@ -279,9 +281,64 @@ class FfmpegRtspPublisher:
         self.codec = None
 
 
+def _terminate_process(process: subprocess.Popen) -> None:  # type: ignore[type-arg]
+    """Terminate a process gracefully, killing it if it does not stop in time."""
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+def generate_mediamtx_config(args: argparse.Namespace) -> str:
+    """Return a minimal mediamtx YAML configuration for this camera's RTSP port."""
+    rtsp_path = args.rtsp_path.lstrip("/")
+    return (
+        "logLevel: warn\n"
+        "logDestinations: [stdout]\n"
+        "api: no\n"
+        "metrics: no\n"
+        "pprof: no\n"
+        f"rtspAddress: :{args.rtsp_port}\n"
+        "protocols: [tcp]\n"
+        "paths:\n"
+        f"  {rtsp_path}:\n"
+        "    source: publisher\n"
+    )
+
+
+def start_mediamtx_process(args: argparse.Namespace) -> subprocess.Popen[bytes]:
+    """Write a per-camera mediamtx config and start the process.
+
+    mediamtx acts as the RTSP relay: ffmpeg pushes the encoded stream to it via
+    RTSP ANNOUNCE/RECORD, and RTSP clients (Frigate, go2rtc, VLC, …) pull from
+    it via the standard DESCRIBE/SETUP/PLAY flow.  This replaces ffmpeg's own
+    ``-rtsp_flags listen`` server mode, which fails with "Connection refused" on
+    Alpine Linux builds.
+    """
+    config_path = Path(f"/tmp/mediamtx_{args.rtsp_port}.yml")
+    config_path.write_text(generate_mediamtx_config(args))
+    process: subprocess.Popen[bytes] = subprocess.Popen(
+        [args.mediamtx_bin, str(config_path)],
+        stdout=subprocess.DEVNULL,
+        stderr=None,
+        bufsize=0,
+    )
+    # Give mediamtx a moment to bind to the port before ffmpeg tries to push.
+    time.sleep(1.0)
+    if process.poll() is not None:
+        raise Kp2pError(f"mediamtx exited unexpectedly with code {process.returncode}")
+    return process
+
+
 def check_runtime_requirements(args: argparse.Namespace) -> None:
     if shutil.which(args.ffmpeg_bin) is None and not Path(args.ffmpeg_bin).exists():
         raise Kp2pError(f"ffmpeg executable not found: {args.ffmpeg_bin}")
+    if shutil.which(args.mediamtx_bin) is None and not Path(args.mediamtx_bin).exists():
+        raise Kp2pError(f"mediamtx executable not found: {args.mediamtx_bin}")
 
 
 def run_source_session(config: BridgeConfig, publisher: FfmpegRtspPublisher) -> None:
@@ -329,6 +386,10 @@ def main() -> int:
             print(f"ffmpeg_status=missing path={args.ffmpeg_bin}")
         else:
             print(f"ffmpeg_status=found path={args.ffmpeg_bin}")
+        if shutil.which(args.mediamtx_bin) is None and not Path(args.mediamtx_bin).exists():
+            print(f"mediamtx_status=missing path={args.mediamtx_bin}")
+        else:
+            print(f"mediamtx_status=found path={args.mediamtx_bin}")
         print("ffmpeg_command=" + subprocess.list2cmdline(build_ffmpeg_command(args, "H265")))
         return 0
 
@@ -338,10 +399,21 @@ def main() -> int:
         print(f"error={exc}")
         return 1
 
+    mediamtx_process: Optional[subprocess.Popen[bytes]] = None
     publisher = FfmpegRtspPublisher(args)
     try:
+        mediamtx_process = start_mediamtx_process(args)
+        print(f"mediamtx_started rtsp_url={rtsp_listen_url(args)}")
         while True:
             try:
+                # Restart mediamtx (and ffmpeg) if the relay process died.
+                if mediamtx_process.poll() is not None:
+                    print(
+                        f"mediamtx_exited code={mediamtx_process.returncode}, restarting"
+                    )
+                    publisher.stop()
+                    mediamtx_process = start_mediamtx_process(args)
+                    print(f"mediamtx_restarted rtsp_url={rtsp_listen_url(args)}")
                 config = resolve_bridge_config(args)
                 if args.uid:
                     print(
@@ -364,6 +436,8 @@ def main() -> int:
         return 0
     finally:
         publisher.stop()
+        if mediamtx_process is not None:
+            _terminate_process(mediamtx_process)
 
 
 if __name__ == "__main__":
