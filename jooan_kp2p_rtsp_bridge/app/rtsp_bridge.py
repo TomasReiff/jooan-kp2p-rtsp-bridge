@@ -134,6 +134,8 @@ def build_ffmpeg_command(args: argparse.Namespace, codec: str) -> list[str]:
         "nobuffer",
         "-flags",
         "low_delay",
+        "-err_detect",
+        "ignore_err",
         "-f",
         fmt,
         "-i",
@@ -156,6 +158,7 @@ class FfmpegRtspPublisher:
         self.args = args
         self.codec: Optional[str] = None
         self.process: Optional[subprocess.Popen[bytes]] = None
+        self.needs_keyframe: bool = True
 
     def ensure_started(self, codec: str) -> None:
         codec = codec.upper()
@@ -171,6 +174,7 @@ class FfmpegRtspPublisher:
             bufsize=0,
         )
         self.codec = codec
+        self.needs_keyframe = True
         print(f"ffmpeg_started codec={codec} rtsp_url={rtsp_listen_url(self.args)}")
 
     def write(self, payload: bytes) -> None:
@@ -207,7 +211,6 @@ def check_runtime_requirements(args: argparse.Namespace) -> None:
 
 def run_source_session(config: BridgeConfig, publisher: FfmpegRtspPublisher) -> None:
     client = Kp2pClient(config.endpoint, timeout=config.timeout)
-    got_keyframe = False
     try:
         client.connect()
         print("source_transport_open=ok")
@@ -220,10 +223,10 @@ def run_source_session(config: BridgeConfig, publisher: FfmpegRtspPublisher) -> 
             if not isinstance(frame, VideoFrame):
                 continue
             publisher.ensure_started(frame.codec)
-            if not got_keyframe:
+            if publisher.needs_keyframe:
                 if frame.frame_type != PROC_FRAME_TYPE_IFRAME:
                     continue
-                got_keyframe = True
+                publisher.needs_keyframe = False
                 print(
                     f"source_keyframe=ok codec={frame.codec} width={frame.width} "
                     f"height={frame.height} fps={frame.fps}"
