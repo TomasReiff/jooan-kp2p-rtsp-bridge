@@ -19,6 +19,50 @@ from kp2p_ws_client import (
     connect_via_uid,
 )
 
+# NALU types that carry codec initialisation parameters (must precede every IDR).
+_HEVC_PS_NALU_TYPES = frozenset((32, 33, 34))  # VPS, SPS, PPS
+_H264_PS_NALU_TYPES = frozenset((7, 8))         # SPS, PPS
+
+
+def _extract_parameter_sets(payload: bytes, is_hevc: bool) -> bytes:
+    """Return all parameter-set NAL units found in an Annex B bitstream.
+
+    For HEVC the function collects VPS (type 32), SPS (type 33) and PPS (type 34).
+    For H.264 it collects SPS (type 7) and PPS (type 8).
+    Start codes are preserved in the returned bytes.
+    Returns b"" when no matching NAL units are found.
+    """
+    ps_types = _HEVC_PS_NALU_TYPES if is_hevc else _H264_PS_NALU_TYPES
+    n = len(payload)
+    # Collect (start_code_position, start_code_length) for every Annex B start code.
+    sc_list: list[tuple[int, int]] = []
+    i = 0
+    while i < n:
+        # Fast path: start codes always begin with 0x00.
+        if payload[i] != 0:
+            i += 1
+            continue
+        if i + 4 <= n and payload[i : i + 4] == b"\x00\x00\x00\x01":
+            sc_list.append((i, 4))
+            i += 4
+        elif i + 3 <= n and payload[i : i + 3] == b"\x00\x00\x01":
+            sc_list.append((i, 3))
+            i += 3
+        else:
+            i += 1
+    result = bytearray()
+    for k, (sc_pos, sc_len) in enumerate(sc_list):
+        nalu_hdr = sc_pos + sc_len
+        if nalu_hdr >= n:
+            continue
+        nalu_byte = payload[nalu_hdr]
+        nalu_type = (nalu_byte >> 1) & 0x3F if is_hevc else nalu_byte & 0x1F
+        if nalu_type not in ps_types:
+            continue
+        nalu_end = sc_list[k + 1][0] if k + 1 < len(sc_list) else n
+        result.extend(payload[sc_pos:nalu_end])
+    return bytes(result)
+
 
 @dataclass
 class BridgeConfig:
@@ -159,11 +203,18 @@ class FfmpegRtspPublisher:
         self.codec: Optional[str] = None
         self.process: Optional[subprocess.Popen[bytes]] = None
         self.needs_keyframe: bool = True
+        # Cached parameter-set NAL units (VPS/SPS/PPS for HEVC, SPS/PPS for H.264).
+        # Kept across ffmpeg restarts so that IDR frames arriving without inline
+        # parameter sets can still be decoded after a publisher reset.
+        self._parameter_sets: bytes = b""
 
     def ensure_started(self, codec: str) -> None:
         codec = codec.upper()
         if self.process is not None and self.process.poll() is None and self.codec == codec:
             return
+        if self.codec is not None and self.codec != codec:
+            # Discard stale parameter sets when the codec changes.
+            self._parameter_sets = b""
         self.stop()
         command = build_ffmpeg_command(self.args, codec)
         self.process = subprocess.Popen(
@@ -184,6 +235,30 @@ class FfmpegRtspPublisher:
             raise Kp2pError(f"ffmpeg exited with code {self.process.returncode}")
         self.process.stdin.write(payload)
         self.process.stdin.flush()
+
+    def write_video_frame(self, frame: VideoFrame) -> None:
+        """Write a video frame to ffmpeg, injecting parameter sets when necessary.
+
+        Many cameras only embed VPS/SPS/PPS (HEVC) or SPS/PPS (H.264) in the
+        very first IDR frame of a stream.  If ffmpeg is restarted mid-stream the
+        next IDR frame arriving from the camera will lack those parameter sets and
+        ffmpeg cannot initialise its decoder, causing the
+        "PPS id out of range" / "Skipping invalid undecodable NALU" errors.
+
+        This method caches the parameter sets whenever they are seen and
+        transparently prepends them to any IDR frame that arrives without them.
+        """
+        payload = frame.payload
+        if frame.frame_type == PROC_FRAME_TYPE_IFRAME:
+            is_hevc = frame.codec.upper() == "H265"
+            ps = _extract_parameter_sets(payload, is_hevc)
+            if ps:
+                # Fresher parameter sets – update the cache.
+                self._parameter_sets = ps
+            elif self._parameter_sets:
+                # IDR arrived without parameter sets; prepend the cached copy.
+                payload = self._parameter_sets + payload
+        self.write(payload)
 
     def stop(self) -> None:
         if self.process is None:
@@ -231,7 +306,7 @@ def run_source_session(config: BridgeConfig, publisher: FfmpegRtspPublisher) -> 
                     f"source_keyframe=ok codec={frame.codec} width={frame.width} "
                     f"height={frame.height} fps={frame.fps}"
                 )
-            publisher.write(frame.payload)
+            publisher.write_video_frame(frame)
     finally:
         try:
             client.close_stream(config.channel, config.stream_id)
