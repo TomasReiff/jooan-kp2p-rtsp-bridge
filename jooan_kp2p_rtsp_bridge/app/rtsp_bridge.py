@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import random
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -18,6 +19,11 @@ from kp2p_ws_client import (
     VideoFrame,
     connect_via_uid,
 )
+
+# Seconds to wait for a subprocess to exit after SIGTERM before escalating to SIGKILL.
+_PROCESS_STOP_TIMEOUT_SECS = 5
+# Seconds to wait for mediamtx to bind its RTSP port before giving up.
+_MEDIAMTX_STARTUP_TIMEOUT_SECS = 5.0
 
 # NALU types that carry codec initialisation parameters (must precede every IDR).
 _HEVC_PS_NALU_TYPES = frozenset((32, 33, 34))  # VPS, SPS, PPS
@@ -273,10 +279,13 @@ class FfmpegRtspPublisher:
         if self.process.poll() is None:
             self.process.terminate()
             try:
-                self.process.wait(timeout=5)
+                self.process.wait(timeout=_PROCESS_STOP_TIMEOUT_SECS)
             except subprocess.TimeoutExpired:
                 self.process.kill()
-                self.process.wait(timeout=5)
+                try:
+                    self.process.wait(timeout=_PROCESS_STOP_TIMEOUT_SECS)
+                except subprocess.TimeoutExpired:
+                    pass  # SIGKILL was sent; the OS will reap the process.
         self.process = None
         self.codec = None
 
@@ -287,10 +296,13 @@ def _terminate_process(process: subprocess.Popen) -> None:  # type: ignore[type-
         return
     process.terminate()
     try:
-        process.wait(timeout=5)
+        process.wait(timeout=_PROCESS_STOP_TIMEOUT_SECS)
     except subprocess.TimeoutExpired:
         process.kill()
-        process.wait(timeout=5)
+        try:
+            process.wait(timeout=_PROCESS_STOP_TIMEOUT_SECS)
+        except subprocess.TimeoutExpired:
+            pass  # SIGKILL was sent; the OS will reap the process.
 
 
 def generate_mediamtx_config(args: argparse.Namespace) -> str:
@@ -327,10 +339,22 @@ def start_mediamtx_process(args: argparse.Namespace) -> subprocess.Popen[bytes]:
         stderr=None,
         bufsize=0,
     )
-    # Give mediamtx a moment to bind to the port before ffmpeg tries to push.
-    time.sleep(1.0)
-    if process.poll() is not None:
-        raise Kp2pError(f"mediamtx exited unexpectedly with code {process.returncode}")
+    # Poll until mediamtx binds to the RTSP port (or fail fast if it exits).
+    deadline = time.monotonic() + _MEDIAMTX_STARTUP_TIMEOUT_SECS
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise Kp2pError(f"mediamtx exited unexpectedly with code {process.returncode}")
+        try:
+            with socket.create_connection(("127.0.0.1", args.rtsp_port), timeout=0.1):
+                break  # Port is accepting connections.
+        except OSError:
+            time.sleep(0.05)
+    else:
+        _terminate_process(process)
+        raise Kp2pError(
+            f"mediamtx did not bind to port {args.rtsp_port} within "
+            f"{_MEDIAMTX_STARTUP_TIMEOUT_SECS:.0f}s"
+        )
     return process
 
 
