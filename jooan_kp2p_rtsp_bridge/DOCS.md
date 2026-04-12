@@ -116,7 +116,7 @@ cameras:
 3. Add this repository URL:
 
 ```text
-https://github.com/TomasReiff/jooan-rtsp-brigde
+https://github.com/TomasReiff/jooan-kp2p-rtsp-bridge
 ```
 
 4. Refresh the add-on store.

@@ -1,4 +1,4 @@
-# jooan-rtsp-brigde
+# jooan-kp2p-rtsp-bridge
 
 Home Assistant add-on repository for restreaming Jooan / Juanvision kp2p camera channels as standard RTSP streams.
 
@@ -21,6 +21,6 @@ See `jooan_kp2p_rtsp_bridge/DOCS.md` for setup and configuration details.
 ## Repository URL
 
 ```text
-https://github.com/TomasReiff/jooan-rtsp-brigde
+https://github.com/TomasReiff/jooan-kp2p-rtsp-bridge
 ```
 
