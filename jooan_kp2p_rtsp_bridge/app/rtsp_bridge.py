@@ -246,7 +246,7 @@ class FfmpegRtspPublisher:
         self.needs_keyframe = True
         self._session_count += 1
         self._has_written = False
-        print(f"stream={self.stream_num} ffmpeg_started codec={codec} rtsp_url={rtsp_listen_url(self.args)}")
+        print(f"stream={self.stream_num} ffmpeg_started codec={codec} rtsp_url={rtsp_listen_url(self.args)}", flush=True)
 
     def write(self, payload: bytes) -> None:
         if self.process is None or self.process.stdin is None:
@@ -261,9 +261,17 @@ class FfmpegRtspPublisher:
         if not self._has_written:
             self._has_written = True
             if self._session_count == 1:
-                print(f"stream={self.stream_num} stream_has_data=ok")
+                print(
+                    f"stream={self.stream_num} jooan_to_rtsp=first_data_ok "
+                    f"rtsp_url={rtsp_listen_url(self.args)}",
+                    flush=True,
+                )
             else:
-                print(f"stream={self.stream_num} stream_retransmission_ok=ok session={self._session_count}")
+                print(
+                    f"stream={self.stream_num} jooan_to_rtsp=retransmission_ok "
+                    f"session={self._session_count} rtsp_url={rtsp_listen_url(self.args)}",
+                    flush=True,
+                )
 
     def write_video_frame(self, frame: VideoFrame) -> None:
         """Write a video frame to ffmpeg, injecting parameter sets when necessary.
@@ -327,7 +335,14 @@ def _terminate_process(process: subprocess.Popen) -> None:  # type: ignore[type-
 
 
 def generate_mediamtx_config(args: argparse.Namespace) -> str:
-    """Return a minimal mediamtx YAML configuration for this camera's RTSP port."""
+    """Return a minimal mediamtx YAML configuration for this camera's RTSP port.
+
+    All non-RTSP protocols (RTMP, HLS, WebRTC, SRT) are explicitly disabled so
+    that multiple per-camera mediamtx instances can run side-by-side without
+    fighting over shared default ports (1935, 8888, 8889, 8890, …).  A single
+    port-binding failure on any of those protocols causes mediamtx to exit,
+    which would prevent cameras 2–N from ever publishing their streams.
+    """
     rtsp_path = args.rtsp_path.lstrip("/")
     return (
         "logLevel: warn\n"
@@ -335,8 +350,15 @@ def generate_mediamtx_config(args: argparse.Namespace) -> str:
         "api: no\n"
         "metrics: no\n"
         "pprof: no\n"
+        # RTSP is the only protocol we need; everything else must be disabled
+        # to avoid port conflicts when several instances start concurrently.
+        "rtsp: yes\n"
         f"rtspAddress: :{args.rtsp_port}\n"
         "protocols: [tcp]\n"
+        "rtmp: no\n"
+        "hls: no\n"
+        "webrtc: no\n"
+        "srt: no\n"
         "paths:\n"
         f"  {rtsp_path}:\n"
         "    source: publisher\n"
@@ -391,11 +413,11 @@ def run_source_session(config: BridgeConfig, publisher: FfmpegRtspPublisher) -> 
     client = Kp2pClient(config.endpoint, timeout=config.timeout)
     try:
         client.connect()
-        print(f"stream={stream_num} source_transport_open=ok")
+        print(f"stream={stream_num} source_transport_open=ok", flush=True)
         client.login(config.username, config.password)
-        print(f"stream={stream_num} source_login=ok")
+        print(f"stream={stream_num} source_login=ok", flush=True)
         cam_desc = client.open_stream(config.channel, config.stream_id)
-        print(f"stream={stream_num} source_stream_open=ok channel={config.channel} stream={config.stream_id} cam_desc={cam_desc!r}")
+        print(f"stream={stream_num} source_stream_open=ok channel={config.channel} stream={config.stream_id} cam_desc={cam_desc!r}", flush=True)
         while True:
             frame = client.recv_media()
             if not isinstance(frame, VideoFrame):
@@ -407,7 +429,8 @@ def run_source_session(config: BridgeConfig, publisher: FfmpegRtspPublisher) -> 
                 publisher.needs_keyframe = False
                 print(
                     f"stream={stream_num} source_keyframe=ok codec={frame.codec} width={frame.width} "
-                    f"height={frame.height} fps={frame.fps}"
+                    f"height={frame.height} fps={frame.fps}",
+                    flush=True,
                 )
             publisher.write_video_frame(frame)
     finally:
@@ -423,27 +446,27 @@ def main() -> int:
     args = parser.parse_args()
 
     stream_num = args.channel + 1
-    print(f"stream={stream_num} rtsp_listen_url={rtsp_listen_url(args)}")
-    print(f"stream={stream_num} client_rtsp_url={client_rtsp_url(args)}")
+    print(f"stream={stream_num} rtsp_listen_url={rtsp_listen_url(args)}", flush=True)
+    print(f"stream={stream_num} client_rtsp_url={client_rtsp_url(args)}", flush=True)
     if args.print_example_config:
         print_example_config(args)
 
     if args.dry_run:
         if shutil.which(args.ffmpeg_bin) is None and not Path(args.ffmpeg_bin).exists():
-            print(f"stream={stream_num} ffmpeg_status=missing path={args.ffmpeg_bin}")
+            print(f"stream={stream_num} ffmpeg_status=missing path={args.ffmpeg_bin}", flush=True)
         else:
-            print(f"stream={stream_num} ffmpeg_status=found path={args.ffmpeg_bin}")
+            print(f"stream={stream_num} ffmpeg_status=found path={args.ffmpeg_bin}", flush=True)
         if shutil.which(args.mediamtx_bin) is None and not Path(args.mediamtx_bin).exists():
-            print(f"stream={stream_num} mediamtx_status=missing path={args.mediamtx_bin}")
+            print(f"stream={stream_num} mediamtx_status=missing path={args.mediamtx_bin}", flush=True)
         else:
-            print(f"stream={stream_num} mediamtx_status=found path={args.mediamtx_bin}")
-        print(f"stream={stream_num} ffmpeg_command=" + subprocess.list2cmdline(build_ffmpeg_command(args, "H265")))
+            print(f"stream={stream_num} mediamtx_status=found path={args.mediamtx_bin}", flush=True)
+        print(f"stream={stream_num} ffmpeg_command=" + subprocess.list2cmdline(build_ffmpeg_command(args, "H265")), flush=True)
         return 0
 
     try:
         check_runtime_requirements(args)
     except Exception as exc:
-        print(f"stream={stream_num} error={exc}")
+        print(f"stream={stream_num} error={exc}", flush=True)
         return 1
 
     mediamtx_process: Optional[subprocess.Popen[bytes]] = None
@@ -454,33 +477,36 @@ def main() -> int:
                 # Start or restart mediamtx if the relay process is not running.
                 if mediamtx_process is None:
                     mediamtx_process = start_mediamtx_process(args)
-                    print(f"stream={stream_num} mediamtx_started rtsp_url={rtsp_listen_url(args)}")
+                    print(f"stream={stream_num} mediamtx_started rtsp_url={rtsp_listen_url(args)}", flush=True)
                 elif mediamtx_process.poll() is not None:
                     print(
-                        f"stream={stream_num} mediamtx_exited code={mediamtx_process.returncode}, restarting"
+                        f"stream={stream_num} mediamtx_exited code={mediamtx_process.returncode}, restarting",
+                        flush=True,
                     )
                     publisher.stop()
                     mediamtx_process = start_mediamtx_process(args)
-                    print(f"stream={stream_num} mediamtx_restarted rtsp_url={rtsp_listen_url(args)}")
+                    print(f"stream={stream_num} mediamtx_restarted rtsp_url={rtsp_listen_url(args)}", flush=True)
                 config = resolve_bridge_config(args)
                 if args.uid:
                     print(
                         f"stream={stream_num} source_mode=uid turn_host={config.endpoint.host} "
-                        f"turn_port={config.endpoint.port} sid={config.endpoint.sid}"
+                        f"turn_port={config.endpoint.port} sid={config.endpoint.sid}",
+                        flush=True,
                     )
                 else:
                     print(
                         f"stream={stream_num} source_mode=direct host={config.endpoint.host} "
-                        f"port={config.endpoint.port} sid={config.endpoint.sid}"
+                        f"port={config.endpoint.port} sid={config.endpoint.sid}",
+                        flush=True,
                     )
                 run_source_session(config, publisher)
             except KeyboardInterrupt:
                 raise
             except Exception as exc:
-                print(f"stream={stream_num} source_error={exc}")
+                print(f"stream={stream_num} source_error={exc}", flush=True)
                 time.sleep(args.reconnect_delay)
     except KeyboardInterrupt:
-        print(f"stream={stream_num} bridge_stopped=keyboard_interrupt")
+        print(f"stream={stream_num} bridge_stopped=keyboard_interrupt", flush=True)
         return 0
     finally:
         publisher.stop()
