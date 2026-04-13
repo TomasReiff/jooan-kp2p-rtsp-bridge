@@ -147,7 +147,7 @@ def main() -> int:
             command = build_bridge_command(options, camera)
             print(
                 f"starting camera={camera.channel + 1} channel={camera.channel} "
-                f"stream_id={camera.stream_id} rtsp=rtsp://<HA_HOST_IP>:{camera.rtsp_port}/{camera.rtsp_path}",
+                f"stream_id={camera.stream_id} rtsp=rtsp://[HA_HOST_IP]:{camera.rtsp_port}/{camera.rtsp_path}",
                 flush=True,
             )
             processes.append(subprocess.Popen(command))
