@@ -215,6 +215,16 @@ class FfmpegRtspPublisher:
         # Kept across ffmpeg restarts so that IDR frames arriving without inline
         # parameter sets can still be decoded after a publisher reset.
         self._parameter_sets: bytes = b""
+        # Counts how many ffmpeg sessions have been started for this publisher.
+        # Used to distinguish the initial session from restarts (retransmissions).
+        self._session_count: int = 0
+        # Becomes True after the first payload write in the current ffmpeg session.
+        self._has_written: bool = False
+
+    @property
+    def stream_num(self) -> int:
+        """1-based camera/stream number derived from the zero-based channel index."""
+        return self.args.channel + 1
 
     def ensure_started(self, codec: str) -> None:
         codec = codec.upper()
@@ -234,15 +244,26 @@ class FfmpegRtspPublisher:
         )
         self.codec = codec
         self.needs_keyframe = True
-        print(f"ffmpeg_started codec={codec} rtsp_url={rtsp_listen_url(self.args)}")
+        self._session_count += 1
+        self._has_written = False
+        print(f"stream={self.stream_num} ffmpeg_started codec={codec} rtsp_url={rtsp_listen_url(self.args)}")
 
     def write(self, payload: bytes) -> None:
         if self.process is None or self.process.stdin is None:
-            raise Kp2pError("ffmpeg publisher is not started")
+            raise Kp2pError(f"stream={self.stream_num} ffmpeg publisher is not started")
         if self.process.poll() is not None:
-            raise Kp2pError(f"ffmpeg exited with code {self.process.returncode}")
-        self.process.stdin.write(payload)
-        self.process.stdin.flush()
+            raise Kp2pError(f"stream={self.stream_num} ffmpeg exited with code {self.process.returncode}")
+        try:
+            self.process.stdin.write(payload)
+            self.process.stdin.flush()
+        except BrokenPipeError as exc:
+            raise Kp2pError(f"stream={self.stream_num} ffmpeg stdin broken pipe: {exc}") from exc
+        if not self._has_written:
+            self._has_written = True
+            if self._session_count == 1:
+                print(f"stream={self.stream_num} stream_has_data=ok")
+            else:
+                print(f"stream={self.stream_num} stream_retransmission_ok=ok session={self._session_count}")
 
     def write_video_frame(self, frame: VideoFrame) -> None:
         """Write a video frame to ffmpeg, injecting parameter sets when necessary.
@@ -366,14 +387,15 @@ def check_runtime_requirements(args: argparse.Namespace) -> None:
 
 
 def run_source_session(config: BridgeConfig, publisher: FfmpegRtspPublisher) -> None:
+    stream_num = publisher.stream_num
     client = Kp2pClient(config.endpoint, timeout=config.timeout)
     try:
         client.connect()
-        print("source_transport_open=ok")
+        print(f"stream={stream_num} source_transport_open=ok")
         client.login(config.username, config.password)
-        print("source_login=ok")
+        print(f"stream={stream_num} source_login=ok")
         cam_desc = client.open_stream(config.channel, config.stream_id)
-        print(f"source_stream_open=ok channel={config.channel} stream={config.stream_id} cam_desc={cam_desc!r}")
+        print(f"stream={stream_num} source_stream_open=ok channel={config.channel} stream={config.stream_id} cam_desc={cam_desc!r}")
         while True:
             frame = client.recv_media()
             if not isinstance(frame, VideoFrame):
@@ -384,7 +406,7 @@ def run_source_session(config: BridgeConfig, publisher: FfmpegRtspPublisher) -> 
                     continue
                 publisher.needs_keyframe = False
                 print(
-                    f"source_keyframe=ok codec={frame.codec} width={frame.width} "
+                    f"stream={stream_num} source_keyframe=ok codec={frame.codec} width={frame.width} "
                     f"height={frame.height} fps={frame.fps}"
                 )
             publisher.write_video_frame(frame)
@@ -400,27 +422,28 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
 
-    print(f"rtsp_listen_url={rtsp_listen_url(args)}")
-    print(f"client_rtsp_url={client_rtsp_url(args)}")
+    stream_num = args.channel + 1
+    print(f"stream={stream_num} rtsp_listen_url={rtsp_listen_url(args)}")
+    print(f"stream={stream_num} client_rtsp_url={client_rtsp_url(args)}")
     if args.print_example_config:
         print_example_config(args)
 
     if args.dry_run:
         if shutil.which(args.ffmpeg_bin) is None and not Path(args.ffmpeg_bin).exists():
-            print(f"ffmpeg_status=missing path={args.ffmpeg_bin}")
+            print(f"stream={stream_num} ffmpeg_status=missing path={args.ffmpeg_bin}")
         else:
-            print(f"ffmpeg_status=found path={args.ffmpeg_bin}")
+            print(f"stream={stream_num} ffmpeg_status=found path={args.ffmpeg_bin}")
         if shutil.which(args.mediamtx_bin) is None and not Path(args.mediamtx_bin).exists():
-            print(f"mediamtx_status=missing path={args.mediamtx_bin}")
+            print(f"stream={stream_num} mediamtx_status=missing path={args.mediamtx_bin}")
         else:
-            print(f"mediamtx_status=found path={args.mediamtx_bin}")
-        print("ffmpeg_command=" + subprocess.list2cmdline(build_ffmpeg_command(args, "H265")))
+            print(f"stream={stream_num} mediamtx_status=found path={args.mediamtx_bin}")
+        print(f"stream={stream_num} ffmpeg_command=" + subprocess.list2cmdline(build_ffmpeg_command(args, "H265")))
         return 0
 
     try:
         check_runtime_requirements(args)
     except Exception as exc:
-        print(f"error={exc}")
+        print(f"stream={stream_num} error={exc}")
         return 1
 
     mediamtx_process: Optional[subprocess.Popen[bytes]] = None
@@ -431,33 +454,33 @@ def main() -> int:
                 # Start or restart mediamtx if the relay process is not running.
                 if mediamtx_process is None:
                     mediamtx_process = start_mediamtx_process(args)
-                    print(f"mediamtx_started rtsp_url={rtsp_listen_url(args)}")
+                    print(f"stream={stream_num} mediamtx_started rtsp_url={rtsp_listen_url(args)}")
                 elif mediamtx_process.poll() is not None:
                     print(
-                        f"mediamtx_exited code={mediamtx_process.returncode}, restarting"
+                        f"stream={stream_num} mediamtx_exited code={mediamtx_process.returncode}, restarting"
                     )
                     publisher.stop()
                     mediamtx_process = start_mediamtx_process(args)
-                    print(f"mediamtx_restarted rtsp_url={rtsp_listen_url(args)}")
+                    print(f"stream={stream_num} mediamtx_restarted rtsp_url={rtsp_listen_url(args)}")
                 config = resolve_bridge_config(args)
                 if args.uid:
                     print(
-                        f"source_mode=uid turn_host={config.endpoint.host} "
+                        f"stream={stream_num} source_mode=uid turn_host={config.endpoint.host} "
                         f"turn_port={config.endpoint.port} sid={config.endpoint.sid}"
                     )
                 else:
                     print(
-                        f"source_mode=direct host={config.endpoint.host} "
+                        f"stream={stream_num} source_mode=direct host={config.endpoint.host} "
                         f"port={config.endpoint.port} sid={config.endpoint.sid}"
                     )
                 run_source_session(config, publisher)
             except KeyboardInterrupt:
                 raise
             except Exception as exc:
-                print(f"source_error={exc}")
+                print(f"stream={stream_num} source_error={exc}")
                 time.sleep(args.reconnect_delay)
     except KeyboardInterrupt:
-        print("bridge_stopped=keyboard_interrupt")
+        print(f"stream={stream_num} bridge_stopped=keyboard_interrupt")
         return 0
     finally:
         publisher.stop()
