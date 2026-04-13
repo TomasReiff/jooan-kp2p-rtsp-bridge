@@ -426,12 +426,13 @@ def main() -> int:
     mediamtx_process: Optional[subprocess.Popen[bytes]] = None
     publisher = FfmpegRtspPublisher(args)
     try:
-        mediamtx_process = start_mediamtx_process(args)
-        print(f"mediamtx_started rtsp_url={rtsp_listen_url(args)}")
         while True:
             try:
-                # Restart mediamtx (and ffmpeg) if the relay process died.
-                if mediamtx_process.poll() is not None:
+                # Start or restart mediamtx if the relay process is not running.
+                if mediamtx_process is None:
+                    mediamtx_process = start_mediamtx_process(args)
+                    print(f"mediamtx_started rtsp_url={rtsp_listen_url(args)}")
+                elif mediamtx_process.poll() is not None:
                     print(
                         f"mediamtx_exited code={mediamtx_process.returncode}, restarting"
                     )
