@@ -30,6 +30,12 @@ _HEVC_PS_NALU_TYPES = frozenset((32, 33, 34))  # VPS, SPS, PPS
 _H264_PS_NALU_TYPES = frozenset((7, 8))         # SPS, PPS
 
 
+def _is_hevc(codec: str) -> bool:
+    """Return True when the codec string refers to H.265/HEVC, False for H.264/AVC."""
+    upper = codec.upper()
+    return "265" in upper or "HEVC" in upper
+
+
 def _extract_parameter_sets(payload: bytes, is_hevc: bool) -> bytes:
     """Return all parameter-set NAL units found in an Annex B bitstream.
 
@@ -175,7 +181,7 @@ def print_example_config(args: argparse.Namespace) -> None:
 
 
 def build_ffmpeg_command(args: argparse.Namespace, codec: str) -> list[str]:
-    fmt = "hevc" if codec.upper() == "H265" else "h264"
+    fmt = "hevc" if _is_hevc(codec) else "h264"
     # Push to the local mediamtx relay on loopback.  mediamtx then serves
     # RTSP pull connections to clients on the same port.
     push_url = f"rtsp://127.0.0.1:{args.rtsp_port}/{args.rtsp_path.lstrip('/')}"
@@ -190,6 +196,12 @@ def build_ffmpeg_command(args: argparse.Namespace, codec: str) -> list[str]:
         "low_delay",
         "-err_detect",
         "ignore_err",
+        # Raw Annex-B bitstreams from the camera carry no DTS/PTS; tell ffmpeg
+        # to stamp each packet with the current wall-clock time so that the RTSP
+        # output can build valid RTP timestamps.  Without this ffmpeg warns
+        # "Timestamps are unset" and then fails to write the output header.
+        "-use_wallclock_as_timestamps",
+        "1",
         "-f",
         fmt,
         "-i",
@@ -261,9 +273,15 @@ class FfmpegRtspPublisher:
         if not self._has_written:
             self._has_written = True
             if self._session_count == 1:
-                print(f"stream={self.stream_num} stream_has_data=ok")
+                print(
+                    f"stream={self.stream_num} jooan_first_data_ok=true "
+                    "first Jooan frame successfully written to ffmpeg/RTSP"
+                )
             else:
-                print(f"stream={self.stream_num} stream_retransmission_ok=ok session={self._session_count}")
+                print(
+                    f"stream={self.stream_num} jooan_retransmit_ok=true session={self._session_count} "
+                    "Jooan frame successfully written to ffmpeg/RTSP after reconnect"
+                )
 
     def write_video_frame(self, frame: VideoFrame) -> None:
         """Write a video frame to ffmpeg, injecting parameter sets when necessary.
@@ -279,7 +297,7 @@ class FfmpegRtspPublisher:
         """
         payload = frame.payload
         if frame.frame_type == PROC_FRAME_TYPE_IFRAME:
-            is_hevc = frame.codec.upper() == "H265"
+            is_hevc = _is_hevc(frame.codec)
             ps = _extract_parameter_sets(payload, is_hevc)
             if ps:
                 # Fresher parameter sets – update the cache.
