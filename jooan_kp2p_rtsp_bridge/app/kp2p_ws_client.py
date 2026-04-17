@@ -377,6 +377,35 @@ def find_annexb_start(payload: bytes, start: int, max_probe: int = 32) -> int:
     return start
 
 
+def convert_length_prefixed_to_annexb(payload: bytes, length_size: int = 4) -> Optional[bytes]:
+    offset = 0
+    converted = bytearray()
+    while offset + length_size <= len(payload):
+        nal_size = int.from_bytes(payload[offset : offset + length_size], "big")
+        offset += length_size
+        if nal_size <= 0 or offset + nal_size > len(payload):
+            return None
+        converted.extend(b"\x00\x00\x00\x01")
+        converted.extend(payload[offset : offset + nal_size])
+        offset += nal_size
+    if offset != len(payload):
+        return None
+    return bytes(converted) if converted else None
+
+
+def normalize_video_payload(payload: bytes, start: int) -> bytes:
+    max_probe = min(16, max(0, len(payload) - start))
+    for prefix_skip in range(max_probe + 1):
+        candidate = payload[start + prefix_skip :]
+        if candidate.startswith(b"\x00\x00\x00\x01") or candidate.startswith(b"\x00\x00\x01"):
+            return candidate
+        converted = convert_length_prefixed_to_annexb(candidate)
+        if converted is not None:
+            return converted
+    annexb_start = find_annexb_start(payload, start)
+    return payload[annexb_start:]
+
+
 def parse_video_frame(payload: bytes, timestamp_ms: int) -> Optional[VideoFrame]:
     offset = 0
     if len(payload) >= 40 and int.from_bytes(payload[0:4], "little") == PROC_FRAME_MAGIC2:
@@ -406,10 +435,9 @@ def parse_video_frame(payload: bytes, timestamp_ms: int) -> Optional[VideoFrame]
     width = int.from_bytes(params[12:16], "little")
     height = int.from_bytes(params[16:20], "little")
     offset += 24
-    offset = find_annexb_start(payload, offset)
     if len(payload) < offset:
         return None
-    return VideoFrame(codec, frame_type, channel, width, height, fps, timestamp_ms, payload[offset:])
+    return VideoFrame(codec, frame_type, channel, width, height, fps, timestamp_ms, normalize_video_payload(payload, offset))
 
 
 def parse_audio_frame(payload: bytes, timestamp_ms: int) -> Optional[AudioFrame]:

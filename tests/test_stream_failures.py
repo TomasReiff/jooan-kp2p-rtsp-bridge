@@ -14,7 +14,9 @@ from kp2p_ws_client import (  # noqa: E402
     P2P_FRAME_TYPE_LIVE,
     PROC_FRAME_MAGIC,
     PROC_FRAME_TYPE_IFRAME,
+    convert_length_prefixed_to_annexb,
     find_annexb_start,
+    normalize_video_payload,
     parse_api_header,
     parse_video_frame,
 )
@@ -100,6 +102,19 @@ class StreamFailureTests(unittest.TestCase):
         payload = b"\x00\x00\x00\x01\x26\x01"
         self.assertEqual(find_annexb_start(payload, 0), 0)
 
+    def test_convert_length_prefixed_to_annexb(self) -> None:
+        payload = b"\x00\x00\x00\x04\x26\x01\x02\x03\x00\x00\x00\x03\x44\x55\x66"
+        expected = b"\x00\x00\x00\x01\x26\x01\x02\x03\x00\x00\x00\x01\x44\x55\x66"
+
+        self.assertEqual(convert_length_prefixed_to_annexb(payload), expected)
+
+    def test_normalize_video_payload_accepts_length_prefixed_with_prefix_bytes(self) -> None:
+        payload = b"\x99" * 8 + b"\x00\x00\x00\x04\x26\x01\x02\x03"
+
+        normalized = normalize_video_payload(payload, 0)
+
+        self.assertEqual(normalized, b"\x00\x00\x00\x01\x26\x01\x02\x03")
+
     def test_parse_video_frame_accepts_payload_without_extra_8_bytes(self) -> None:
         stream_payload = b"\x00\x00\x00\x01\x26\x01\x02\x03"
         frame = parse_video_frame(self.build_video_payload(b"H265", stream_payload), 0)
@@ -115,6 +130,14 @@ class StreamFailureTests(unittest.TestCase):
         self.assertIsNotNone(frame)
         assert frame is not None
         self.assertEqual(frame.payload, stream_payload)
+
+    def test_parse_video_frame_accepts_length_prefixed_payload(self) -> None:
+        stream_payload = b"\x00\x00\x00\x04\x26\x01\x02\x03"
+        frame = parse_video_frame(self.build_video_payload(b"H265", stream_payload), 0)
+
+        self.assertIsNotNone(frame)
+        assert frame is not None
+        self.assertEqual(frame.payload, b"\x00\x00\x00\x01\x26\x01\x02\x03")
 
 
 if __name__ == "__main__":
