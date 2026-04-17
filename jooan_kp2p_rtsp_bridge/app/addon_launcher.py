@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -12,6 +13,8 @@ from pathlib import Path
 OPTIONS_PATH = Path("/data/options.json")
 OPTIONS_BACKUP_PATH = Path("/data/options.last_good.json")
 STARTUP_STAGGER_SECONDS = 1.0
+PROCESS_STOP_TIMEOUT_SECS = 5.0
+MEDIAMTX_STARTUP_TIMEOUT_SECS = 5.0
 
 
 @dataclass
@@ -36,8 +39,8 @@ def default_options() -> dict:
             {
                 "channel": channel,
                 "enabled": True,
-                "stream_id": 0,
-                "rtsp_port": 8551 + channel,
+                "stream_id": 1,
+                "rtsp_port": 8554,
                 "rtsp_path": f"cam{channel + 1}",
             }
             for channel in range(8)
@@ -151,6 +154,9 @@ def build_bridge_command(options: dict, camera: CameraConfig) -> list[str]:
     command = [
         sys.executable,
         "/app/rtsp_bridge.py",
+        "--shared-mediamtx",
+        "--mediamtx-host",
+        "127.0.0.1",
         "--username",
         str(options.get("username", "admin")),
         "--password",
@@ -181,15 +187,75 @@ def build_bridge_command(options: dict, camera: CameraConfig) -> list[str]:
     return command
 
 
+def build_shared_mediamtx_config(cameras: list[CameraConfig]) -> str:
+    if not cameras:
+        raise ValueError("At least one camera is required")
+    rtsp_port = cameras[0].rtsp_port
+    if any(camera.rtsp_port != rtsp_port for camera in cameras):
+        raise ValueError("All enabled cameras must use the same rtsp_port with shared mediamtx")
+    paths: list[str] = []
+    for camera in cameras:
+        rtsp_path = camera.rtsp_path.lstrip("/")
+        if not rtsp_path:
+            raise ValueError(f"Camera {camera.channel + 1} must have a non-empty rtsp_path")
+        if rtsp_path in paths:
+            raise ValueError(f"Duplicate rtsp_path configured: {rtsp_path}")
+        paths.append(rtsp_path)
+    config = [
+        "logLevel: warn",
+        "logDestinations: [stdout]",
+        "api: no",
+        "metrics: no",
+        "pprof: no",
+        "readTimeout: 30s",
+        "writeTimeout: 30s",
+        "rtsp: yes",
+        f"rtspAddress: :{rtsp_port}",
+        "protocols: [tcp]",
+        "rtmp: no",
+        "hls: no",
+        "webrtc: no",
+        "srt: no",
+        "paths:",
+    ]
+    for rtsp_path in paths:
+        config.append(f"  {rtsp_path}:")
+        config.append("    source: publisher")
+    return "\n".join(config) + "\n"
+
+
+def start_shared_mediamtx_process(cameras: list[CameraConfig], mediamtx_bin: str = "mediamtx") -> subprocess.Popen[bytes]:
+    config_path = Path("/tmp/mediamtx_shared.yml")
+    config_path.write_text(build_shared_mediamtx_config(cameras), encoding="utf-8")
+    process: subprocess.Popen[bytes] = subprocess.Popen(
+        [mediamtx_bin, str(config_path)],
+        stdout=subprocess.DEVNULL,
+        stderr=None,
+        bufsize=0,
+    )
+    deadline = time.monotonic() + MEDIAMTX_STARTUP_TIMEOUT_SECS
+    rtsp_port = cameras[0].rtsp_port
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError(f"mediamtx exited unexpectedly with code {process.returncode}")
+        try:
+            with socket.create_connection(("127.0.0.1", rtsp_port), timeout=0.1):
+                return process
+        except OSError:
+            time.sleep(0.05)
+    terminate_process(process)
+    raise RuntimeError(f"mediamtx did not bind to port {rtsp_port} within {MEDIAMTX_STARTUP_TIMEOUT_SECS:.0f}s")
+
+
 def terminate_process(process: subprocess.Popen[bytes]) -> None:
     if process.poll() is not None:
         return
     process.terminate()
     try:
-        process.wait(timeout=5)
+        process.wait(timeout=PROCESS_STOP_TIMEOUT_SECS)
     except subprocess.TimeoutExpired:
         process.kill()
-        process.wait(timeout=5)
+        process.wait(timeout=PROCESS_STOP_TIMEOUT_SECS)
 
 
 def main() -> int:
@@ -200,6 +266,7 @@ def main() -> int:
         return 1
 
     processes: list[subprocess.Popen[bytes]] = []
+    mediamtx_process: subprocess.Popen[bytes] | None = None
     stopping = False
 
     def handle_signal(signum, frame) -> None:  # type: ignore[unused-argument]
@@ -210,6 +277,11 @@ def main() -> int:
     signal.signal(signal.SIGINT, handle_signal)
 
     try:
+        mediamtx_process = start_shared_mediamtx_process(cameras)
+        print(
+            f"shared_rtsp_server=started rtsp=rtsp://<HA_HOST_IP>:{cameras[0].rtsp_port}/<camera_path>",
+            flush=True,
+        )
         for camera in cameras:
             command = build_bridge_command(options, camera)
             print(
@@ -221,6 +293,9 @@ def main() -> int:
             time.sleep(STARTUP_STAGGER_SECONDS)
 
         while not stopping:
+            if mediamtx_process is not None and mediamtx_process.poll() is not None:
+                print(f"error=shared mediamtx exited code={mediamtx_process.returncode}", flush=True)
+                return mediamtx_process.returncode or 1
             for process in processes:
                 return_code = process.poll()
                 if return_code is not None:
@@ -231,6 +306,8 @@ def main() -> int:
     finally:
         for process in processes:
             terminate_process(process)
+        if mediamtx_process is not None:
+            terminate_process(mediamtx_process)
 
 
 if __name__ == "__main__":

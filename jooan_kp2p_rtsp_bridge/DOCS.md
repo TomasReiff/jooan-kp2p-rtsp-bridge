@@ -8,7 +8,7 @@ This is a **Home Assistant add-on**, not a HACS integration. The add-on does the
 
 - Connects to the DVR or camera using the vendor kp2p websocket protocol.
 - Opens one bridge process per enabled camera.
-- Runs a [mediamtx](https://github.com/bluenviron/mediamtx) RTSP relay per camera to accept the encoded stream from FFmpeg and serve it to RTSP clients.
+- Runs a single shared [mediamtx](https://github.com/bluenviron/mediamtx) RTSP relay for all camera paths on one RTSP port.
 - Lets you configure the connection from the Home Assistant add-on UI.
 - Can feed Frigate, go2rtc, VLC, or other RTSP-capable software.
 
@@ -33,7 +33,7 @@ Each item in `cameras` has:
 - `channel`: Zero-based DVR channel number
 - `enabled`: Whether to start this bridge. Leave unused or offline channels disabled.
 - `stream_id`: `0` = main stream, `1` = substream
-- `rtsp_port`: RTSP port to expose
+- `rtsp_port`: Shared RTSP port to expose. All enabled cameras should use the same port.
 - `rtsp_path`: RTSP path to expose
 
 If the device returns `Open stream failed with result=-40`, that channel is usually unavailable on the DVR. The bridge now backs off much longer before retrying that camera so it does not flood the device with failed reconnects.
@@ -54,18 +54,18 @@ ffmpeg_loglevel: warning
 cameras:
   - channel: 0
     enabled: true
-    stream_id: 0
-    rtsp_port: 8551
+    stream_id: 1
+    rtsp_port: 8554
     rtsp_path: cam1
   - channel: 1
     enabled: true
-    stream_id: 0
-    rtsp_port: 8552
+    stream_id: 1
+    rtsp_port: 8554
     rtsp_path: cam2
   - channel: 15
     enabled: true
     stream_id: 1
-    rtsp_port: 8566
+    rtsp_port: 8554
     rtsp_path: cam16_sub
 ```
 
@@ -73,18 +73,12 @@ cameras:
 
 Use the Home Assistant host IP or LAN IP in your RTSP client, **not** `127.0.0.1` unless that client runs in the same container.
 
-Example if this add-on exposes:
-
-- `cam1` on `8551`
-- `cam2` on `8552`
-- `cam3` on `8553`
-
-Then a client can use:
+Example if this add-on exposes all cameras on shared RTSP port `8554`:
 
 ```text
-rtsp://HOME_ASSISTANT_HOST_IP:8551/cam1
-rtsp://HOME_ASSISTANT_HOST_IP:8552/cam2
-rtsp://HOME_ASSISTANT_HOST_IP:8553/cam3
+rtsp://HOME_ASSISTANT_HOST_IP:8554/cam1
+rtsp://HOME_ASSISTANT_HOST_IP:8554/cam2
+rtsp://HOME_ASSISTANT_HOST_IP:8554/cam3
 ```
 
 For example, Frigate can use:
@@ -94,21 +88,21 @@ cameras:
   cam1:
     ffmpeg:
       inputs:
-        - path: rtsp://HOME_ASSISTANT_HOST_IP:8551/cam1
+        - path: rtsp://HOME_ASSISTANT_HOST_IP:8554/cam1
           roles:
             - detect
             - record
   cam2:
     ffmpeg:
       inputs:
-        - path: rtsp://HOME_ASSISTANT_HOST_IP:8552/cam2
+        - path: rtsp://HOME_ASSISTANT_HOST_IP:8554/cam2
           roles:
             - detect
             - record
   cam3:
     ffmpeg:
       inputs:
-        - path: rtsp://HOME_ASSISTANT_HOST_IP:8553/cam3
+        - path: rtsp://HOME_ASSISTANT_HOST_IP:8554/cam3
           roles:
             - detect
             - record

@@ -18,8 +18,8 @@ class AddonLauncherOptionsTests(unittest.TestCase):
         expected_first_camera = {
             "channel": 0,
             "enabled": True,
-            "stream_id": 0,
-            "rtsp_port": 8551,
+            "stream_id": 1,
+            "rtsp_port": 8554,
             "rtsp_path": "cam1",
         }
 
@@ -28,6 +28,7 @@ class AddonLauncherOptionsTests(unittest.TestCase):
         self.assertEqual(options["host"], "192.168.1.10")
         self.assertEqual(options["cameras"][0], expected_first_camera)
         self.assertEqual(len(options["cameras"]), 8)
+        self.assertTrue(all(camera["rtsp_port"] == 8554 for camera in options["cameras"]))
 
     def test_load_options_saves_non_empty_config_as_backup(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -90,6 +91,38 @@ class AddonLauncherOptionsTests(unittest.TestCase):
 
             self.assertEqual(loaded, backup)
             self.assertEqual(json.loads(options_path.read_text(encoding="utf-8")), backup)
+
+    def test_build_bridge_command_uses_shared_mediamtx_flags(self) -> None:
+        options = addon_launcher.default_options()
+        camera = addon_launcher.build_camera_configs(options)[0]
+
+        command = addon_launcher.build_bridge_command(options, camera)
+
+        self.assertIn("--shared-mediamtx", command)
+        self.assertIn("--mediamtx-host", command)
+        self.assertIn("127.0.0.1", command)
+        self.assertEqual(command[command.index("--rtsp-port") + 1], "8554")
+
+    def test_build_shared_mediamtx_config_contains_all_paths(self) -> None:
+        cameras = [
+            addon_launcher.CameraConfig(channel=0, stream_id=1, rtsp_port=8554, rtsp_path="cam1"),
+            addon_launcher.CameraConfig(channel=1, stream_id=1, rtsp_port=8554, rtsp_path="cam2"),
+        ]
+
+        config = addon_launcher.build_shared_mediamtx_config(cameras)
+
+        self.assertIn("rtspAddress: :8554", config)
+        self.assertIn("  cam1:", config)
+        self.assertIn("  cam2:", config)
+
+    def test_build_shared_mediamtx_config_rejects_mixed_ports(self) -> None:
+        cameras = [
+            addon_launcher.CameraConfig(channel=0, stream_id=1, rtsp_port=8554, rtsp_path="cam1"),
+            addon_launcher.CameraConfig(channel=1, stream_id=1, rtsp_port=8555, rtsp_path="cam2"),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "same rtsp_port"):
+            addon_launcher.build_shared_mediamtx_config(cameras)
 
 
 if __name__ == "__main__":

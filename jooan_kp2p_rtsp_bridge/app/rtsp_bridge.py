@@ -100,6 +100,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--ffmpeg-bin", default="ffmpeg", help="ffmpeg executable path.")
     parser.add_argument("--mediamtx-bin", default="mediamtx", help="mediamtx executable path.")
+    parser.add_argument("--mediamtx-host", default="127.0.0.1", help="Host of the RTSP relay to publish to.")
+    parser.add_argument("--shared-mediamtx", action="store_true", help="Publish to a shared mediamtx server instead of managing one locally.")
     parser.add_argument("--ffmpeg-loglevel", default="warning")
     parser.add_argument("--rtsp-listen-host", default="0.0.0.0", help="Host ffmpeg should bind the RTSP server to.")
     parser.add_argument("--rtsp-port", type=int, default=8554)
@@ -192,7 +194,7 @@ def build_ffmpeg_command(args: argparse.Namespace, codec: str, frame_fps: int) -
     input_fps = resolve_input_fps(frame_fps)
     # Push to the local mediamtx relay on loopback.  mediamtx then serves
     # RTSP pull connections to clients on the same port.
-    push_url = f"rtsp://127.0.0.1:{args.rtsp_port}/{args.rtsp_path.lstrip('/')}"
+    push_url = f"rtsp://{args.mediamtx_host}:{args.rtsp_port}/{args.rtsp_path.lstrip('/')}"
     return [
         args.ffmpeg_bin,
         "-hide_banner",
@@ -437,7 +439,7 @@ def start_mediamtx_process(args: argparse.Namespace) -> subprocess.Popen[bytes]:
 def check_runtime_requirements(args: argparse.Namespace) -> None:
     if shutil.which(args.ffmpeg_bin) is None and not Path(args.ffmpeg_bin).exists():
         raise Kp2pError(f"ffmpeg executable not found: {args.ffmpeg_bin}")
-    if shutil.which(args.mediamtx_bin) is None and not Path(args.mediamtx_bin).exists():
+    if not args.shared_mediamtx and (shutil.which(args.mediamtx_bin) is None and not Path(args.mediamtx_bin).exists()):
         raise Kp2pError(f"mediamtx executable not found: {args.mediamtx_bin}")
 
 
@@ -497,7 +499,9 @@ def main() -> int:
             print(f"stream={stream_num} ffmpeg_status=missing path={args.ffmpeg_bin}", flush=True)
         else:
             print(f"stream={stream_num} ffmpeg_status=found path={args.ffmpeg_bin}", flush=True)
-        if shutil.which(args.mediamtx_bin) is None and not Path(args.mediamtx_bin).exists():
+        if args.shared_mediamtx:
+            print(f"stream={stream_num} mediamtx_status=shared host={args.mediamtx_host}", flush=True)
+        elif shutil.which(args.mediamtx_bin) is None and not Path(args.mediamtx_bin).exists():
             print(f"stream={stream_num} mediamtx_status=missing path={args.mediamtx_bin}", flush=True)
         else:
             print(f"stream={stream_num} mediamtx_status=found path={args.mediamtx_bin}", flush=True)
@@ -520,7 +524,9 @@ def main() -> int:
         while True:
             try:
                 # Start or restart mediamtx if the relay process is not running.
-                if mediamtx_process is None:
+                if args.shared_mediamtx:
+                    pass
+                elif mediamtx_process is None:
                     mediamtx_process = start_mediamtx_process(args)
                     print(f"stream={stream_num} mediamtx_started rtsp_url={rtsp_listen_url(args)}", flush=True)
                 elif mediamtx_process.poll() is not None:
