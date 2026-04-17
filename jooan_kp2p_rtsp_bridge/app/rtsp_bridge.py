@@ -461,6 +461,8 @@ def run_source_session(config: BridgeConfig, publisher: FfmpegRtspPublisher) -> 
             frame = client.recv_media()
             if not isinstance(frame, VideoFrame):
                 continue
+            if frame.channel != config.channel:
+                continue
             publisher.ensure_started(frame.codec, frame.fps)
             if publisher.needs_keyframe:
                 if frame.frame_type != PROC_FRAME_TYPE_IFRAME:
