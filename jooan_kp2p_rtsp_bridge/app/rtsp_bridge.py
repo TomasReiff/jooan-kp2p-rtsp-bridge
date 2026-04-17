@@ -15,6 +15,7 @@ from kp2p_ws_client import (
     Endpoint,
     Kp2pClient,
     Kp2pError,
+    Kp2pStreamOpenError,
     PROC_FRAME_TYPE_IFRAME,
     VideoFrame,
     connect_via_uid,
@@ -185,7 +186,7 @@ def build_ffmpeg_command(args: argparse.Namespace, codec: str) -> list[str]:
         "-loglevel",
         args.ffmpeg_loglevel,
         "-fflags",
-        "nobuffer",
+        "+genpts+nobuffer",
         "-flags",
         "low_delay",
         "-err_detect",
@@ -408,6 +409,12 @@ def check_runtime_requirements(args: argparse.Namespace) -> None:
         raise Kp2pError(f"mediamtx executable not found: {args.mediamtx_bin}")
 
 
+def reconnect_delay_for_error(base_delay: float, exc: Exception) -> float:
+    if isinstance(exc, Kp2pStreamOpenError) and not exc.retryable:
+        return max(base_delay, 60.0)
+    return base_delay
+
+
 def run_source_session(config: BridgeConfig, publisher: FfmpegRtspPublisher) -> None:
     stream_num = publisher.stream_num
     client = Kp2pClient(config.endpoint, timeout=config.timeout)
@@ -503,8 +510,10 @@ def main() -> int:
             except KeyboardInterrupt:
                 raise
             except Exception as exc:
+                delay = reconnect_delay_for_error(args.reconnect_delay, exc)
                 print(f"stream={stream_num} source_error={exc}", flush=True)
-                time.sleep(args.reconnect_delay)
+                print(f"stream={stream_num} source_retry_in={delay:g}s", flush=True)
+                time.sleep(delay)
     except KeyboardInterrupt:
         print(f"stream={stream_num} bridge_stopped=keyboard_interrupt", flush=True)
         return 0

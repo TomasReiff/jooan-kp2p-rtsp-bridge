@@ -10,6 +10,8 @@ from pathlib import Path
 
 
 OPTIONS_PATH = Path("/data/options.json")
+OPTIONS_BACKUP_PATH = Path("/data/options.last_good.json")
+STARTUP_STAGGER_SECONDS = 1.0
 
 
 @dataclass
@@ -20,8 +22,40 @@ class CameraConfig:
     rtsp_path: str
 
 
+def load_options_file(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write_options_file(path: Path, options: dict) -> None:
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    temp_path.write_text(json.dumps(options, indent=2, sort_keys=True), encoding="utf-8")
+    temp_path.replace(path)
+
+
+def has_persistable_options(options: object) -> bool:
+    return isinstance(options, dict) and bool(options)
+
+
 def load_options() -> dict:
-    return json.loads(OPTIONS_PATH.read_text(encoding="utf-8"))
+    try:
+        options = load_options_file(OPTIONS_PATH)
+    except (OSError, json.JSONDecodeError) as exc:
+        if OPTIONS_BACKUP_PATH.exists():
+            print(f"options_warning=load_failed using_backup reason={exc}", flush=True)
+            return load_options_file(OPTIONS_BACKUP_PATH)
+        raise
+
+    if has_persistable_options(options):
+        write_options_file(OPTIONS_BACKUP_PATH, options)
+        return options
+
+    if OPTIONS_BACKUP_PATH.exists():
+        restored = load_options_file(OPTIONS_BACKUP_PATH)
+        if has_persistable_options(restored):
+            write_options_file(OPTIONS_PATH, restored)
+            print("options_restore=last_good_backup", flush=True)
+            return restored
+    return options
 
 
 def _as_int(value: object, default: int) -> int:
@@ -151,6 +185,7 @@ def main() -> int:
                 flush=True,
             )
             processes.append(subprocess.Popen(command))
+            time.sleep(STARTUP_STAGGER_SECONDS)
 
         while not stopping:
             for process in processes:

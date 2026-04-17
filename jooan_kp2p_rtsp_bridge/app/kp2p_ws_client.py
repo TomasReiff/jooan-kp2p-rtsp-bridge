@@ -31,6 +31,7 @@ APP_PROTO_CMD_LIVE_RSP = 31
 
 APP_PROTO_PARAM_LIVE_CMD_STOP = 1
 APP_PROTO_PARAM_LIVE_CMD_START = 2
+APP_PROTO_RESULT_STREAM_UNAVAILABLE = -40
 
 PROC_FRAME_MAGIC = 0x4652414D
 PROC_FRAME_MAGIC2 = 0x4652414E
@@ -84,6 +85,23 @@ RCON = (0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36)
 
 class Kp2pError(RuntimeError):
     pass
+
+
+def describe_live_result(result: int) -> str:
+    if result == APP_PROTO_RESULT_STREAM_UNAVAILABLE:
+        return "channel unavailable or not enabled on the device"
+    return ""
+
+
+class Kp2pStreamOpenError(Kp2pError):
+    def __init__(self, channel: int, stream_id: int, result: int) -> None:
+        self.channel = channel
+        self.stream_id = stream_id
+        self.result = result
+        self.retryable = result != APP_PROTO_RESULT_STREAM_UNAVAILABLE
+        detail = describe_live_result(result)
+        suffix = f" ({detail})" if detail else ""
+        super().__init__(f"Open stream failed with result={result}{suffix}")
 
 
 @dataclass
@@ -228,6 +246,10 @@ def pack_u64(value: int) -> bytes:
     return struct.pack("<Q", value & 0xFFFFFFFFFFFFFFFF)
 
 
+def parse_s32_le(data: bytes, start: int) -> int:
+    return int.from_bytes(data[start : start + 4], "little", signed=True)
+
+
 def parse_api_header(data: bytes) -> ApiHeader:
     if len(data) < 24:
         raise Kp2pError(f"Short API header: {len(data)} bytes")
@@ -236,7 +258,7 @@ def parse_api_header(data: bytes) -> ApiHeader:
         version=int.from_bytes(data[4:8], "little"),
         ticket=int.from_bytes(data[8:12], "little"),
         cmd=int.from_bytes(data[12:16], "little"),
-        result=int.from_bytes(data[16:20], "little"),
+        result=parse_s32_le(data, 16),
         size=int.from_bytes(data[20:24], "little"),
     )
 
@@ -317,7 +339,7 @@ def parse_iot_header(data: bytes) -> tuple[int, int, int, int, bytes]:
     cmd = int.from_bytes(data[4:8], "little")
     ticket = int.from_bytes(data[12:16], "little")
     sid = int.from_bytes(data[16:20], "little")
-    ecode = int.from_bytes(data[24:28], "little")
+    ecode = parse_s32_le(data, 24)
     payload_len = int.from_bytes(data[28:32], "little")
     payload = data[32 : 32 + payload_len]
     return cmd, ticket, sid, ecode, payload
@@ -655,7 +677,7 @@ class Kp2pClient:
             if channel_no != channel or stream_no != stream_id or live_cmd != APP_PROTO_PARAM_LIVE_CMD_START:
                 continue
             if result != 0:
-                raise Kp2pError(f"Open stream failed with result={result}")
+                raise Kp2pStreamOpenError(channel, stream_id, result)
             return cam_desc
         raise Kp2pError("Timed out waiting for live open response")
 

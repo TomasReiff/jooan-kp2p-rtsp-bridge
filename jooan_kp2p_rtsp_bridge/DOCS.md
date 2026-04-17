@@ -16,6 +16,7 @@ This is a **Home Assistant add-on**, not a HACS integration. The add-on does the
 
 ### Global options
 
+- Use the Home Assistant add-on **Configuration** UI to edit settings. Do not edit the packaged add-on files directly; updates replace those defaults.
 - `use_uid`: Enable this if you want to use the vendor cloud UID / TURN path instead of direct LAN access.
 - `host` / `port`: Direct LAN connection target.
 - `uid`: Device UID for cloud/TURN mode.
@@ -29,10 +30,14 @@ This is a **Home Assistant add-on**, not a HACS integration. The add-on does the
 Each item in `cameras` has:
 
 - `channel`: Zero-based DVR channel number
-- `enabled`: Whether to start this bridge
+- `enabled`: Whether to start this bridge. Leave unused or offline channels disabled.
 - `stream_id`: `0` = main stream, `1` = substream
 - `rtsp_port`: RTSP port to expose
 - `rtsp_path`: RTSP path to expose
+
+If the device returns `Open stream failed with result=-40`, that channel is usually unavailable on the DVR. The bridge now backs off much longer before retrying that camera so it does not flood the device with failed reconnects.
+
+The add-on now ships with an empty default config and keeps a `/data/options.last_good.json` backup of the last non-empty add-on configuration. If Home Assistant unexpectedly replaces `options.json` with an empty default config, the bridge restores that last good copy on startup.
 
 Example uncapped camera config:
 
