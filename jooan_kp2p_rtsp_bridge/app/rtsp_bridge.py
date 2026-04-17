@@ -25,6 +25,8 @@ from kp2p_ws_client import (
 _PROCESS_STOP_TIMEOUT_SECS = 5
 # Seconds to wait for mediamtx to bind its RTSP port before giving up.
 _MEDIAMTX_STARTUP_TIMEOUT_SECS = 5.0
+# Fallback FPS to use when the source stream does not report one.
+_DEFAULT_INPUT_FPS = 15.0
 
 # NALU types that carry codec initialisation parameters (must precede every IDR).
 _HEVC_PS_NALU_TYPES = frozenset((32, 33, 34))  # VPS, SPS, PPS
@@ -95,7 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--password", required=True)
     parser.add_argument("--channel", type=int, required=True, help="Zero-based channel index. Channel 2 means cam 3.")
     parser.add_argument("--stream-id", type=int, default=0, help="0=main stream, 1=substream.")
-    parser.add_argument("--timeout", type=float, default=10.0)
+    parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--ffmpeg-bin", default="ffmpeg", help="ffmpeg executable path.")
     parser.add_argument("--mediamtx-bin", default="mediamtx", help="mediamtx executable path.")
     parser.add_argument("--ffmpeg-loglevel", default="warning")
@@ -175,8 +177,13 @@ def print_example_config(args: argparse.Namespace) -> None:
     print("              - record")
 
 
-def build_ffmpeg_command(args: argparse.Namespace, codec: str) -> list[str]:
+def resolve_input_fps(frame_fps: int) -> float:
+    return float(frame_fps) if frame_fps > 0 else _DEFAULT_INPUT_FPS
+
+
+def build_ffmpeg_command(args: argparse.Namespace, codec: str, frame_fps: int) -> list[str]:
     fmt = "hevc" if codec.upper() == "H265" else "h264"
+    input_fps = resolve_input_fps(frame_fps)
     # Push to the local mediamtx relay on loopback.  mediamtx then serves
     # RTSP pull connections to clients on the same port.
     push_url = f"rtsp://127.0.0.1:{args.rtsp_port}/{args.rtsp_path.lstrip('/')}"
@@ -187,10 +194,14 @@ def build_ffmpeg_command(args: argparse.Namespace, codec: str) -> list[str]:
         args.ffmpeg_loglevel,
         "-fflags",
         "+genpts+nobuffer",
+        "-use_wallclock_as_timestamps",
+        "1",
         "-flags",
         "low_delay",
         "-err_detect",
         "ignore_err",
+        "-r",
+        f"{input_fps:g}",
         "-f",
         fmt,
         "-i",
@@ -210,6 +221,7 @@ class FfmpegRtspPublisher:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
         self.codec: Optional[str] = None
+        self.input_fps: Optional[float] = None
         self.process: Optional[subprocess.Popen[bytes]] = None
         self.needs_keyframe: bool = True
         # Cached parameter-set NAL units (VPS/SPS/PPS for HEVC, SPS/PPS for H.264).
@@ -227,15 +239,21 @@ class FfmpegRtspPublisher:
         """1-based camera/stream number derived from the zero-based channel index."""
         return self.args.channel + 1
 
-    def ensure_started(self, codec: str) -> None:
+    def ensure_started(self, codec: str, frame_fps: int) -> None:
         codec = codec.upper()
-        if self.process is not None and self.process.poll() is None and self.codec == codec:
+        input_fps = resolve_input_fps(frame_fps)
+        if (
+            self.process is not None
+            and self.process.poll() is None
+            and self.codec == codec
+            and self.input_fps == input_fps
+        ):
             return
         if self.codec is not None and self.codec != codec:
             # Discard stale parameter sets when the codec changes.
             self._parameter_sets = b""
         self.stop()
-        command = build_ffmpeg_command(self.args, codec)
+        command = build_ffmpeg_command(self.args, codec, frame_fps)
         self.process = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,
@@ -244,10 +262,15 @@ class FfmpegRtspPublisher:
             bufsize=0,
         )
         self.codec = codec
+        self.input_fps = input_fps
         self.needs_keyframe = True
         self._session_count += 1
         self._has_written = False
-        print(f"stream={self.stream_num} ffmpeg_started codec={codec} rtsp_url={rtsp_listen_url(self.args)}", flush=True)
+        print(
+            f"stream={self.stream_num} ffmpeg_started codec={codec} input_fps={input_fps:g} "
+            f"rtsp_url={rtsp_listen_url(self.args)}",
+            flush=True,
+        )
 
     def write(self, payload: bytes) -> None:
         if self.process is None or self.process.stdin is None:
@@ -318,6 +341,7 @@ class FfmpegRtspPublisher:
                     pass  # SIGKILL was sent; the OS will reap the process.
         self.process = None
         self.codec = None
+        self.input_fps = None
 
 
 def _terminate_process(process: subprocess.Popen) -> None:  # type: ignore[type-arg]
@@ -351,6 +375,8 @@ def generate_mediamtx_config(args: argparse.Namespace) -> str:
         "api: no\n"
         "metrics: no\n"
         "pprof: no\n"
+        "readTimeout: 30s\n"
+        "writeTimeout: 30s\n"
         # RTSP is the only protocol we need; everything else must be disabled
         # to avoid port conflicts when several instances start concurrently.
         "rtsp: yes\n"
@@ -429,7 +455,7 @@ def run_source_session(config: BridgeConfig, publisher: FfmpegRtspPublisher) -> 
             frame = client.recv_media()
             if not isinstance(frame, VideoFrame):
                 continue
-            publisher.ensure_started(frame.codec)
+            publisher.ensure_started(frame.codec, frame.fps)
             if publisher.needs_keyframe:
                 if frame.frame_type != PROC_FRAME_TYPE_IFRAME:
                     continue
@@ -467,7 +493,11 @@ def main() -> int:
             print(f"stream={stream_num} mediamtx_status=missing path={args.mediamtx_bin}", flush=True)
         else:
             print(f"stream={stream_num} mediamtx_status=found path={args.mediamtx_bin}", flush=True)
-        print(f"stream={stream_num} ffmpeg_command=" + subprocess.list2cmdline(build_ffmpeg_command(args, "H265")), flush=True)
+        print(
+            f"stream={stream_num} ffmpeg_command="
+            + subprocess.list2cmdline(build_ffmpeg_command(args, "H265", int(_DEFAULT_INPUT_FPS))),
+            flush=True,
+        )
         return 0
 
     try:

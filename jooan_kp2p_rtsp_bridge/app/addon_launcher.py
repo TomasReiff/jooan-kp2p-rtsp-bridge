@@ -22,6 +22,29 @@ class CameraConfig:
     rtsp_path: str
 
 
+def default_options() -> dict:
+    return {
+        "use_uid": False,
+        "host": "192.168.1.10",
+        "port": 10000,
+        "uid": "",
+        "username": "admin",
+        "password": "",
+        "reconnect_delay": 3,
+        "ffmpeg_loglevel": "warning",
+        "cameras": [
+            {
+                "channel": channel,
+                "enabled": True,
+                "stream_id": 0,
+                "rtsp_port": 8551 + channel,
+                "rtsp_path": f"cam{channel + 1}",
+            }
+            for channel in range(8)
+        ],
+    }
+
+
 def load_options_file(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -36,6 +59,10 @@ def has_persistable_options(options: object) -> bool:
     return isinstance(options, dict) and bool(options)
 
 
+def is_default_options(options: object) -> bool:
+    return isinstance(options, dict) and options == default_options()
+
+
 def load_options() -> dict:
     try:
         options = load_options_file(OPTIONS_PATH)
@@ -45,16 +72,20 @@ def load_options() -> dict:
             return load_options_file(OPTIONS_BACKUP_PATH)
         raise
 
+    if OPTIONS_BACKUP_PATH.exists():
+        restored = load_options_file(OPTIONS_BACKUP_PATH)
+        if is_default_options(options) and has_persistable_options(restored) and restored != options:
+            write_options_file(OPTIONS_PATH, restored)
+            print("options_restore=last_good_backup reason=defaults_reset", flush=True)
+            return restored
+        if not has_persistable_options(options) and has_persistable_options(restored):
+            write_options_file(OPTIONS_PATH, restored)
+            print("options_restore=last_good_backup reason=empty_config", flush=True)
+            return restored
+
     if has_persistable_options(options):
         write_options_file(OPTIONS_BACKUP_PATH, options)
         return options
-
-    if OPTIONS_BACKUP_PATH.exists():
-        restored = load_options_file(OPTIONS_BACKUP_PATH)
-        if has_persistable_options(restored):
-            write_options_file(OPTIONS_PATH, restored)
-            print("options_restore=last_good_backup", flush=True)
-            return restored
     return options
 
 

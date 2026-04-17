@@ -37,7 +37,7 @@ Each item in `cameras` has:
 
 If the device returns `Open stream failed with result=-40`, that channel is usually unavailable on the DVR. The bridge now backs off much longer before retrying that camera so it does not flood the device with failed reconnects.
 
-The add-on now ships with an empty default config and keeps a `/data/options.last_good.json` backup of the last non-empty add-on configuration. If Home Assistant unexpectedly replaces `options.json` with an empty default config, the bridge restores that last good copy on startup.
+The add-on ships with the full initial default camera config and keeps a `/data/options.last_good.json` backup of the last saved add-on configuration. If Home Assistant unexpectedly replaces `options.json` with the packaged defaults or an empty config, the bridge restores that last good copy on startup.
 
 Example uncapped camera config:
 

@@ -14,6 +14,21 @@ import addon_launcher  # noqa: E402
 
 
 class AddonLauncherOptionsTests(unittest.TestCase):
+    def test_default_options_match_manifest_defaults(self) -> None:
+        expected_first_camera = {
+            "channel": 0,
+            "enabled": True,
+            "stream_id": 0,
+            "rtsp_port": 8551,
+            "rtsp_path": "cam1",
+        }
+
+        options = addon_launcher.default_options()
+
+        self.assertEqual(options["host"], "192.168.1.10")
+        self.assertEqual(options["cameras"][0], expected_first_camera)
+        self.assertEqual(len(options["cameras"]), 8)
+
     def test_load_options_saves_non_empty_config_as_backup(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             options_path = Path(temp_dir) / "options.json"
@@ -40,6 +55,27 @@ class AddonLauncherOptionsTests(unittest.TestCase):
             backup_path = Path(temp_dir) / "options.last_good.json"
             options_path.write_text("{}", encoding="utf-8")
             backup = {"uid": "ABC123", "cameras": [{"channel": 6, "enabled": True, "rtsp_path": "cam7"}]}
+            backup_path.write_text(json.dumps(backup), encoding="utf-8")
+
+            old_options_path = addon_launcher.OPTIONS_PATH
+            old_backup_path = addon_launcher.OPTIONS_BACKUP_PATH
+            addon_launcher.OPTIONS_PATH = options_path
+            addon_launcher.OPTIONS_BACKUP_PATH = backup_path
+            try:
+                loaded = addon_launcher.load_options()
+            finally:
+                addon_launcher.OPTIONS_PATH = old_options_path
+                addon_launcher.OPTIONS_BACKUP_PATH = old_backup_path
+
+            self.assertEqual(loaded, backup)
+            self.assertEqual(json.loads(options_path.read_text(encoding="utf-8")), backup)
+
+    def test_load_options_restores_backup_when_current_config_is_packaged_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            options_path = Path(temp_dir) / "options.json"
+            backup_path = Path(temp_dir) / "options.last_good.json"
+            options_path.write_text(json.dumps(addon_launcher.default_options()), encoding="utf-8")
+            backup = {"host": "192.168.1.99", "cameras": [{"channel": 4, "enabled": True, "rtsp_path": "cam5"}]}
             backup_path.write_text(json.dumps(backup), encoding="utf-8")
 
             old_options_path = addon_launcher.OPTIONS_PATH
