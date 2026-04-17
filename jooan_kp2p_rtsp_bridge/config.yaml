@@ -1,5 +1,5 @@
 name: "Jooan kp2p RTSP Bridge"
-version: "0.4.8"
+version: "0.4.9"
 slug: "jooan_kp2p_rtsp_bridge"
 description: "Restream Jooan/Juanvision kp2p cameras as standard RTSP streams"
 init: false

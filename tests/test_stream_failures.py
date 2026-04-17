@@ -21,6 +21,7 @@ from kp2p_ws_client import (  # noqa: E402
     normalize_video_payload,
     parse_api_header,
     parse_video_frame,
+    slice_declared_frame_payload,
 )
 from rtsp_bridge import (  # noqa: E402
     _DEFAULT_INPUT_FPS,
@@ -33,9 +34,19 @@ from rtsp_bridge import (  # noqa: E402
 
 
 class StreamFailureTests(unittest.TestCase):
-    def build_video_payload(self, codec: bytes, stream_payload: bytes, *, extra_prefix: bytes = b"") -> bytes:
+    def build_video_payload(
+        self,
+        codec: bytes,
+        stream_payload: bytes,
+        *,
+        extra_prefix: bytes = b"",
+        declared_length: int | None = None,
+    ) -> bytes:
         frame_head = bytearray(24)
         frame_head[0:4] = struct.pack("<I", PROC_FRAME_MAGIC)
+        header_overhead = 24 + 8 + 24 + len(extra_prefix)
+        actual_declared_length = declared_length if declared_length is not None else header_overhead + len(stream_payload)
+        frame_head[4:8] = struct.pack("<I", actual_declared_length)
         frame_head[8:12] = struct.pack("<I", P2P_FRAME_TYPE_LIVE)
         frame_head[16:24] = struct.pack("<Q", 1234)
 
@@ -125,6 +136,20 @@ class StreamFailureTests(unittest.TestCase):
 
         self.assertEqual(detect_codec_from_annexb(payload), "H265")
 
+    def test_slice_declared_frame_payload_accepts_total_declared_length(self) -> None:
+        payload = b"\x11" * 56 + b"\xaa\xbb\xcc\xdd" + b"\xee\xff"
+
+        sliced = slice_declared_frame_payload(payload, 0, 56, 60)
+
+        self.assertEqual(sliced, b"\xaa\xbb\xcc\xdd")
+
+    def test_slice_declared_frame_payload_accepts_data_only_declared_length(self) -> None:
+        payload = b"\x11" * 56 + b"\xaa\xbb\xcc\xdd" + b"\xee\xff"
+
+        sliced = slice_declared_frame_payload(payload, 0, 56, 4)
+
+        self.assertEqual(sliced, b"\xaa\xbb\xcc\xdd")
+
     def test_normalize_video_payload_accepts_length_prefixed_with_prefix_bytes(self) -> None:
         payload = b"\x99" * 8 + b"\x00\x00\x00\x04\x26\x01\x02\x03"
 
@@ -163,6 +188,21 @@ class StreamFailureTests(unittest.TestCase):
         self.assertIsNotNone(frame)
         assert frame is not None
         self.assertEqual(frame.codec, "H264")
+
+    def test_parse_video_frame_uses_declared_length_to_drop_trailing_bytes(self) -> None:
+        stream_payload = b"\x00\x00\x00\x01\x67\x64\x00\x1f"
+        frame = parse_video_frame(
+            self.build_video_payload(
+                b"H264",
+                stream_payload + b"\x99\x88\x77\x66",
+                declared_length=56 + len(stream_payload),
+            ),
+            0,
+        )
+
+        self.assertIsNotNone(frame)
+        assert frame is not None
+        self.assertEqual(frame.payload, stream_payload)
 
 
 if __name__ == "__main__":

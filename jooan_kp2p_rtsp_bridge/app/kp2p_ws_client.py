@@ -447,15 +447,31 @@ def detect_codec_from_annexb(payload: bytes) -> Optional[str]:
     return None
 
 
+def slice_declared_frame_payload(payload: bytes, frame_start: int, data_offset: int, declared_length: int) -> bytes:
+    remaining = len(payload) - data_offset
+    if declared_length <= 0 or remaining <= 0:
+        return payload[data_offset:]
+    if declared_length <= remaining:
+        return payload[data_offset : data_offset + declared_length]
+    header_overhead = data_offset - frame_start
+    if declared_length > header_overhead:
+        data_length = declared_length - header_overhead
+        if data_length <= remaining:
+            return payload[data_offset : data_offset + data_length]
+    return payload[data_offset:]
+
+
 def parse_video_frame(payload: bytes, timestamp_ms: int) -> Optional[VideoFrame]:
     offset = 0
     if len(payload) >= 40 and int.from_bytes(payload[0:4], "little") == PROC_FRAME_MAGIC2:
         offset += 40
+    frame_start = offset
     if len(payload) < offset + 24:
         return None
     if int.from_bytes(payload[offset : offset + 4], "little") != PROC_FRAME_MAGIC:
         return None
     frame_head = payload[offset : offset + 24]
+    declared_length = int.from_bytes(frame_head[4:8], "little")
     headtype = int.from_bytes(frame_head[8:12], "little")
     if headtype != P2P_FRAME_TYPE_LIVE:
         return None
@@ -478,7 +494,7 @@ def parse_video_frame(payload: bytes, timestamp_ms: int) -> Optional[VideoFrame]
     offset += 24
     if len(payload) < offset:
         return None
-    video_payload = normalize_video_payload(payload, offset)
+    video_payload = normalize_video_payload(slice_declared_frame_payload(payload, frame_start, offset, declared_length), 0)
     detected_codec = detect_codec_from_annexb(video_payload)
     if detected_codec is not None:
         codec = detected_codec
@@ -489,11 +505,13 @@ def parse_audio_frame(payload: bytes, timestamp_ms: int) -> Optional[AudioFrame]
     offset = 0
     if len(payload) >= 40 and int.from_bytes(payload[0:4], "little") == PROC_FRAME_MAGIC2:
         offset += 40
+    frame_start = offset
     if len(payload) < offset + 24:
         return None
     if int.from_bytes(payload[offset : offset + 4], "little") != PROC_FRAME_MAGIC:
         return None
     frame_head = payload[offset : offset + 24]
+    declared_length = int.from_bytes(frame_head[4:8], "little")
     headtype = int.from_bytes(frame_head[8:12], "little")
     if headtype != P2P_FRAME_TYPE_LIVE:
         return None
@@ -516,7 +534,16 @@ def parse_audio_frame(payload: bytes, timestamp_ms: int) -> Optional[AudioFrame]
     offset += 24 + 8
     if len(payload) < offset:
         return None
-    return AudioFrame(codec, frame_type, channel, sample_rate, sample_width, channels, timestamp_ms, payload[offset:])
+    return AudioFrame(
+        codec,
+        frame_type,
+        channel,
+        sample_rate,
+        sample_width,
+        channels,
+        timestamp_ms,
+        slice_declared_frame_payload(payload, frame_start, offset, declared_length),
+    )
 
 
 class SimpleWebSocket:
