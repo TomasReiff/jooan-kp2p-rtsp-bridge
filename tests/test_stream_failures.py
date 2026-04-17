@@ -62,7 +62,12 @@ class StreamFailureTests(unittest.TestCase):
         exc = Kp2pStreamOpenError(channel=1, stream_id=0, result=-40)
 
         self.assertFalse(exc.retryable)
-        self.assertEqual(reconnect_delay_for_error(3.0, exc), 60.0)
+        self.assertEqual(reconnect_delay_for_error(3.0, 60.0, exc), 60.0)
+
+    def test_channel_unavailable_errors_use_configured_delay(self) -> None:
+        exc = Kp2pStreamOpenError(channel=1, stream_id=0, result=-40)
+
+        self.assertEqual(reconnect_delay_for_error(3.0, 90.0, exc), 90.0)
 
     def test_ffmpeg_command_generates_timestamps(self) -> None:
         args = build_parser().parse_args(["--password", "secret", "--channel", "0"])

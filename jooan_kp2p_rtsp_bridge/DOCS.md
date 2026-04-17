@@ -22,6 +22,7 @@ This is a **Home Assistant add-on**, not a HACS integration. The add-on does the
 - `uid`: Device UID for cloud/TURN mode.
 - `username` / `password`: DVR login credentials.
 - `reconnect_delay`: Delay before retrying if a bridge process fails.
+- `unavailable_stream_reconnect_delay`: Delay before retrying a channel that reports `result=-40` / unavailable.
 - `ffmpeg_loglevel`: FFmpeg log verbosity.
 - `cameras`: List of camera bridge definitions.
 
@@ -48,6 +49,7 @@ port: 10000
 username: admin
 password: YOUR_PASSWORD
 reconnect_delay: 3
+unavailable_stream_reconnect_delay: 60
 ffmpeg_loglevel: warning
 cameras:
   - channel: 0

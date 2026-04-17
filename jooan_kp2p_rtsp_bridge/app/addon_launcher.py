@@ -169,6 +169,8 @@ def build_bridge_command(options: dict, camera: CameraConfig) -> list[str]:
         str(options.get("ffmpeg_loglevel", "warning")),
         "--reconnect-delay",
         str(options.get("reconnect_delay", 3)),
+        "--unavailable-stream-reconnect-delay",
+        str(options.get("unavailable_stream_reconnect_delay", 60)),
         "--camera-name",
         f"cam{camera.channel + 1}",
     ]

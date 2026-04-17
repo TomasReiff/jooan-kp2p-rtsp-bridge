@@ -123,6 +123,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seconds to wait before reconnecting after a source error.",
     )
     parser.add_argument(
+        "--unavailable-stream-reconnect-delay",
+        type=float,
+        default=60.0,
+        help="Seconds to wait before retrying channels that report stream unavailable.",
+    )
+    parser.add_argument(
         "--print-example-config",
         "--print-frigate-config",
         dest="print_example_config",
@@ -435,9 +441,9 @@ def check_runtime_requirements(args: argparse.Namespace) -> None:
         raise Kp2pError(f"mediamtx executable not found: {args.mediamtx_bin}")
 
 
-def reconnect_delay_for_error(base_delay: float, exc: Exception) -> float:
+def reconnect_delay_for_error(base_delay: float, unavailable_delay: float, exc: Exception) -> float:
     if isinstance(exc, Kp2pStreamOpenError) and not exc.retryable:
-        return max(base_delay, 60.0)
+        return max(base_delay, unavailable_delay)
     return base_delay
 
 
@@ -540,7 +546,11 @@ def main() -> int:
             except KeyboardInterrupt:
                 raise
             except Exception as exc:
-                delay = reconnect_delay_for_error(args.reconnect_delay, exc)
+                delay = reconnect_delay_for_error(
+                    args.reconnect_delay,
+                    args.unavailable_stream_reconnect_delay,
+                    exc,
+                )
                 print(f"stream={stream_num} source_error={exc}", flush=True)
                 print(f"stream={stream_num} source_retry_in={delay:g}s", flush=True)
                 time.sleep(delay)
