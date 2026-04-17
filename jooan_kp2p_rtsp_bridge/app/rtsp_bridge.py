@@ -189,6 +189,16 @@ def resolve_input_fps(frame_fps: int) -> float:
     return float(frame_fps) if frame_fps > 0 else _DEFAULT_INPUT_FPS
 
 
+def build_packet_timestamp_bsf(frame_fps: int) -> str:
+    input_fps = resolve_input_fps(frame_fps)
+    return (
+        f"setts=time_base=1/90000:"
+        f"pts=N/({input_fps:g}*TB_OUT):"
+        f"dts=N/({input_fps:g}*TB_OUT):"
+        f"duration=1/({input_fps:g}*TB_OUT)"
+    )
+
+
 def build_ffmpeg_command(args: argparse.Namespace, codec: str, frame_fps: int) -> list[str]:
     fmt = "hevc" if codec.upper() == "H265" else "h264"
     input_fps = resolve_input_fps(frame_fps)
@@ -217,6 +227,8 @@ def build_ffmpeg_command(args: argparse.Namespace, codec: str, frame_fps: int) -
         "-an",
         "-c:v",
         "copy",
+        "-bsf:v",
+        build_packet_timestamp_bsf(frame_fps),
         "-f",
         "rtsp",
         "-rtsp_transport",

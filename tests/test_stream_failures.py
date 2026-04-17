@@ -25,6 +25,7 @@ from kp2p_ws_client import (  # noqa: E402
 )
 from rtsp_bridge import (  # noqa: E402
     _DEFAULT_INPUT_FPS,
+    build_packet_timestamp_bsf,
     build_ffmpeg_command,
     build_parser,
     generate_mediamtx_config,
@@ -94,6 +95,14 @@ class StreamFailureTests(unittest.TestCase):
         self.assertIn("1", command)
         self.assertIn("-r", command)
         self.assertIn("15", command)
+        self.assertIn("-bsf:v", command)
+        self.assertIn("setts=time_base=1/90000:pts=N/(15*TB_OUT):dts=N/(15*TB_OUT):duration=1/(15*TB_OUT)", command)
+
+    def test_packet_timestamp_bsf_uses_default_fps_when_source_is_missing(self) -> None:
+        self.assertEqual(
+            build_packet_timestamp_bsf(0),
+            "setts=time_base=1/90000:pts=N/(15*TB_OUT):dts=N/(15*TB_OUT):duration=1/(15*TB_OUT)",
+        )
 
     def test_mediamtx_config_allows_longer_stream_gaps(self) -> None:
         args = build_parser().parse_args(["--password", "secret", "--channel", "0"])
