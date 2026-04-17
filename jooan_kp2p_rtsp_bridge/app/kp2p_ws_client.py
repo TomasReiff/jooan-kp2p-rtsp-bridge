@@ -406,6 +406,47 @@ def normalize_video_payload(payload: bytes, start: int) -> bytes:
     return payload[annexb_start:]
 
 
+def iter_annexb_nal_units(payload: bytes, max_units: int = 8) -> list[bytes]:
+    nal_units: list[bytes] = []
+    index = 0
+    while index < len(payload) and len(nal_units) < max_units:
+        if payload[index : index + 4] == b"\x00\x00\x00\x01":
+            start = index + 4
+        elif payload[index : index + 3] == b"\x00\x00\x01":
+            start = index + 3
+        else:
+            index += 1
+            continue
+        next_index = start
+        while next_index < len(payload):
+            if payload[next_index : next_index + 4] == b"\x00\x00\x00\x01" or payload[next_index : next_index + 3] == b"\x00\x00\x01":
+                break
+            next_index += 1
+        nal_units.append(payload[start:next_index])
+        index = next_index
+    return nal_units
+
+
+def detect_codec_from_annexb(payload: bytes) -> Optional[str]:
+    h264_markers = {0x65, 0x61, 0x41, 0x67, 0x68, 0x06, 0x09}
+    h265_markers = {0x26, 0x28, 0x02, 0x40, 0x42, 0x44, 0x4E, 0x50}
+    h264_score = 0
+    h265_score = 0
+    for nal in iter_annexb_nal_units(payload):
+        if not nal:
+            continue
+        first_byte = nal[0]
+        if first_byte in h264_markers:
+            h264_score += 1
+        if first_byte in h265_markers:
+            h265_score += 1
+    if h264_score > h265_score:
+        return "H264"
+    if h265_score > h264_score:
+        return "H265"
+    return None
+
+
 def parse_video_frame(payload: bytes, timestamp_ms: int) -> Optional[VideoFrame]:
     offset = 0
     if len(payload) >= 40 and int.from_bytes(payload[0:4], "little") == PROC_FRAME_MAGIC2:
@@ -437,7 +478,11 @@ def parse_video_frame(payload: bytes, timestamp_ms: int) -> Optional[VideoFrame]
     offset += 24
     if len(payload) < offset:
         return None
-    return VideoFrame(codec, frame_type, channel, width, height, fps, timestamp_ms, normalize_video_payload(payload, offset))
+    video_payload = normalize_video_payload(payload, offset)
+    detected_codec = detect_codec_from_annexb(video_payload)
+    if detected_codec is not None:
+        codec = detected_codec
+    return VideoFrame(codec, frame_type, channel, width, height, fps, timestamp_ms, video_payload)
 
 
 def parse_audio_frame(payload: bytes, timestamp_ms: int) -> Optional[AudioFrame]:
