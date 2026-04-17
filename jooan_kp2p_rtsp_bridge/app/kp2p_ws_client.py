@@ -367,6 +367,16 @@ def parse_live_response(payload: bytes) -> tuple[int, int, int, str]:
     return channel, stream_id, live_cmd, cam_desc
 
 
+def find_annexb_start(payload: bytes, start: int, max_probe: int = 32) -> int:
+    end = min(len(payload), start + max_probe)
+    for index in range(start, end):
+        if payload[index : index + 4] == b"\x00\x00\x00\x01":
+            return index
+        if payload[index : index + 3] == b"\x00\x00\x01":
+            return index
+    return start
+
+
 def parse_video_frame(payload: bytes, timestamp_ms: int) -> Optional[VideoFrame]:
     offset = 0
     if len(payload) >= 40 and int.from_bytes(payload[0:4], "little") == PROC_FRAME_MAGIC2:
@@ -395,7 +405,8 @@ def parse_video_frame(payload: bytes, timestamp_ms: int) -> Optional[VideoFrame]
     fps = int.from_bytes(params[8:12], "little")
     width = int.from_bytes(params[12:16], "little")
     height = int.from_bytes(params[16:20], "little")
-    offset += 24 + 8
+    offset += 24
+    offset = find_annexb_start(payload, offset)
     if len(payload) < offset:
         return None
     return VideoFrame(codec, frame_type, channel, width, height, fps, timestamp_ms, payload[offset:])
