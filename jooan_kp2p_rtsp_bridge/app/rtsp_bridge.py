@@ -8,8 +8,9 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from kp2p_ws_client import (
     Endpoint,
@@ -27,10 +28,23 @@ _PROCESS_STOP_TIMEOUT_SECS = 5
 _MEDIAMTX_STARTUP_TIMEOUT_SECS = 5.0
 # Fallback FPS to use when the source stream does not report one.
 _DEFAULT_INPUT_FPS = 15.0
+_AVAILABILITY_REPORT_INTERVAL = timedelta(days=1)
 
 # NALU types that carry codec initialisation parameters (must precede every IDR).
 _HEVC_PS_NALU_TYPES = frozenset((32, 33, 34))  # VPS, SPS, PPS
 _H264_PS_NALU_TYPES = frozenset((7, 8))         # SPS, PPS
+
+
+def _local_now() -> datetime:
+    return datetime.now().astimezone()
+
+
+def _format_timestamp(value: datetime) -> str:
+    return value.astimezone().isoformat(timespec="seconds")
+
+
+def log_event(message: str) -> None:
+    print(f"{_format_timestamp(_local_now())} {message}", flush=True)
 
 
 def _extract_parameter_sets(payload: bytes, is_hevc: bool) -> bytes:
@@ -81,6 +95,60 @@ class BridgeConfig:
     channel: int
     stream_id: int
     timeout: float
+
+
+class DailyAvailabilityTracker:
+    def __init__(
+        self,
+        stream_num: int,
+        now_func: Callable[[], datetime] | None = None,
+        log_func: Callable[[str], None] = log_event,
+    ) -> None:
+        self.stream_num = stream_num
+        self._now_func = now_func or _local_now
+        self._log_func = log_func
+        self._period_started_at = self._now_func()
+        self._period_available_seconds = 0.0
+        self._available_started_at: Optional[datetime] = None
+
+    def observe(self) -> None:
+        self._roll_periods(self._now_func())
+
+    def mark_available(self) -> None:
+        now = self._now_func()
+        self._roll_periods(now)
+        if self._available_started_at is None:
+            self._available_started_at = now
+
+    def mark_unavailable(self) -> None:
+        now = self._now_func()
+        self._roll_periods(now)
+        self._close_available_window(now)
+
+    def _close_available_window(self, ended_at: datetime) -> None:
+        if self._available_started_at is None:
+            return
+        self._period_available_seconds += max(0.0, (ended_at - self._available_started_at).total_seconds())
+        self._available_started_at = None
+
+    def _roll_periods(self, now: datetime) -> None:
+        while now - self._period_started_at >= _AVAILABILITY_REPORT_INTERVAL:
+            period_ended_at = self._period_started_at + _AVAILABILITY_REPORT_INTERVAL
+            available_seconds = self._period_available_seconds
+            if self._available_started_at is not None:
+                available_seconds += max(0.0, (period_ended_at - self._available_started_at).total_seconds())
+            total_seconds = max(1.0, (period_ended_at - self._period_started_at).total_seconds())
+            availability_pct = (available_seconds / total_seconds) * 100.0
+            self._log_func(
+                f"stream={self.stream_num} availability_daily={availability_pct:.2f}% "
+                f"available_seconds={available_seconds:.0f} total_seconds={total_seconds:.0f} "
+                f"period_start={_format_timestamp(self._period_started_at)} "
+                f"period_end={_format_timestamp(period_ended_at)}"
+            )
+            self._period_started_at = period_ended_at
+            self._period_available_seconds = 0.0
+            if self._available_started_at is not None:
+                self._available_started_at = period_ended_at
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -238,8 +306,9 @@ def build_ffmpeg_command(args: argparse.Namespace, codec: str, frame_fps: int) -
 
 
 class FfmpegRtspPublisher:
-    def __init__(self, args: argparse.Namespace) -> None:
+    def __init__(self, args: argparse.Namespace, availability: DailyAvailabilityTracker) -> None:
         self.args = args
+        self.availability = availability
         self.codec: Optional[str] = None
         self.input_fps: Optional[float] = None
         self.process: Optional[subprocess.Popen[bytes]] = None
@@ -286,10 +355,9 @@ class FfmpegRtspPublisher:
         self.needs_keyframe = True
         self._session_count += 1
         self._has_written = False
-        print(
+        log_event(
             f"stream={self.stream_num} ffmpeg_started codec={codec} input_fps={input_fps:g} "
-            f"rtsp_url={rtsp_listen_url(self.args)}",
-            flush=True,
+            f"rtsp_url={rtsp_listen_url(self.args)}"
         )
 
     def write(self, payload: bytes) -> None:
@@ -305,17 +373,16 @@ class FfmpegRtspPublisher:
         if not self._has_written:
             self._has_written = True
             if self._session_count == 1:
-                print(
+                log_event(
                     f"stream={self.stream_num} jooan_to_rtsp=first_data_ok "
-                    f"rtsp_url={rtsp_listen_url(self.args)}",
-                    flush=True,
+                    f"rtsp_url={rtsp_listen_url(self.args)}"
                 )
             else:
-                print(
+                log_event(
                     f"stream={self.stream_num} jooan_to_rtsp=retransmission_ok "
-                    f"session={self._session_count} rtsp_url={rtsp_listen_url(self.args)}",
-                    flush=True,
+                    f"session={self._session_count} rtsp_url={rtsp_listen_url(self.args)}"
                 )
+            self.availability.mark_available()
 
     def write_video_frame(self, frame: VideoFrame) -> None:
         """Write a video frame to ffmpeg, injecting parameter sets when necessary.
@@ -344,6 +411,7 @@ class FfmpegRtspPublisher:
     def stop(self) -> None:
         if self.process is None:
             return
+        self.availability.mark_unavailable()
         if self.process.stdin is not None:
             try:
                 self.process.stdin.close()
@@ -461,17 +529,22 @@ def reconnect_delay_for_error(base_delay: float, unavailable_delay: float, exc: 
     return base_delay
 
 
-def run_source_session(config: BridgeConfig, publisher: FfmpegRtspPublisher) -> None:
+def run_source_session(
+    config: BridgeConfig,
+    publisher: FfmpegRtspPublisher,
+    availability: DailyAvailabilityTracker,
+) -> None:
     stream_num = publisher.stream_num
     client = Kp2pClient(config.endpoint, timeout=config.timeout)
     try:
         client.connect()
-        print(f"stream={stream_num} source_transport_open=ok", flush=True)
+        log_event(f"stream={stream_num} source_transport_open=ok")
         client.login(config.username, config.password)
-        print(f"stream={stream_num} source_login=ok", flush=True)
+        log_event(f"stream={stream_num} source_login=ok")
         cam_desc = client.open_stream(config.channel, config.stream_id)
-        print(f"stream={stream_num} source_stream_open=ok channel={config.channel} stream={config.stream_id} cam_desc={cam_desc!r}", flush=True)
+        log_event(f"stream={stream_num} source_stream_open=ok channel={config.channel} stream={config.stream_id} cam_desc={cam_desc!r}")
         while True:
+            availability.observe()
             frame = client.recv_media()
             if not isinstance(frame, VideoFrame):
                 continue
@@ -482,10 +555,9 @@ def run_source_session(config: BridgeConfig, publisher: FfmpegRtspPublisher) -> 
                 if frame.frame_type != PROC_FRAME_TYPE_IFRAME:
                     continue
                 publisher.needs_keyframe = False
-                print(
+                log_event(
                     f"stream={stream_num} source_keyframe=ok codec={frame.codec} width={frame.width} "
-                    f"height={frame.height} fps={frame.fps}",
-                    flush=True,
+                    f"height={frame.height} fps={frame.fps}"
                 )
             publisher.write_video_frame(frame)
     finally:
@@ -501,81 +573,79 @@ def main() -> int:
     args = parser.parse_args()
 
     stream_num = args.channel + 1
-    print(f"stream={stream_num} rtsp_listen_url={rtsp_listen_url(args)}", flush=True)
-    print(f"stream={stream_num} client_rtsp_url={client_rtsp_url(args)}", flush=True)
+    log_event(f"stream={stream_num} rtsp_listen_url={rtsp_listen_url(args)}")
+    log_event(f"stream={stream_num} client_rtsp_url={client_rtsp_url(args)}")
     if args.print_example_config:
         print_example_config(args)
 
     if args.dry_run:
         if shutil.which(args.ffmpeg_bin) is None and not Path(args.ffmpeg_bin).exists():
-            print(f"stream={stream_num} ffmpeg_status=missing path={args.ffmpeg_bin}", flush=True)
+            log_event(f"stream={stream_num} ffmpeg_status=missing path={args.ffmpeg_bin}")
         else:
-            print(f"stream={stream_num} ffmpeg_status=found path={args.ffmpeg_bin}", flush=True)
+            log_event(f"stream={stream_num} ffmpeg_status=found path={args.ffmpeg_bin}")
         if args.shared_mediamtx:
-            print(f"stream={stream_num} mediamtx_status=shared host={args.mediamtx_host}", flush=True)
+            log_event(f"stream={stream_num} mediamtx_status=shared host={args.mediamtx_host}")
         elif shutil.which(args.mediamtx_bin) is None and not Path(args.mediamtx_bin).exists():
-            print(f"stream={stream_num} mediamtx_status=missing path={args.mediamtx_bin}", flush=True)
+            log_event(f"stream={stream_num} mediamtx_status=missing path={args.mediamtx_bin}")
         else:
-            print(f"stream={stream_num} mediamtx_status=found path={args.mediamtx_bin}", flush=True)
-        print(
+            log_event(f"stream={stream_num} mediamtx_status=found path={args.mediamtx_bin}")
+        log_event(
             f"stream={stream_num} ffmpeg_command="
-            + subprocess.list2cmdline(build_ffmpeg_command(args, "H265", int(_DEFAULT_INPUT_FPS))),
-            flush=True,
+            + subprocess.list2cmdline(build_ffmpeg_command(args, "H265", int(_DEFAULT_INPUT_FPS)))
         )
         return 0
 
     try:
         check_runtime_requirements(args)
     except Exception as exc:
-        print(f"stream={stream_num} error={exc}", flush=True)
+        log_event(f"stream={stream_num} error={exc}")
         return 1
 
     mediamtx_process: Optional[subprocess.Popen[bytes]] = None
-    publisher = FfmpegRtspPublisher(args)
+    availability = DailyAvailabilityTracker(stream_num)
+    publisher = FfmpegRtspPublisher(args, availability)
     try:
         while True:
             try:
+                availability.observe()
                 # Start or restart mediamtx if the relay process is not running.
                 if args.shared_mediamtx:
                     pass
                 elif mediamtx_process is None:
                     mediamtx_process = start_mediamtx_process(args)
-                    print(f"stream={stream_num} mediamtx_started rtsp_url={rtsp_listen_url(args)}", flush=True)
+                    log_event(f"stream={stream_num} mediamtx_started rtsp_url={rtsp_listen_url(args)}")
                 elif mediamtx_process.poll() is not None:
-                    print(
-                        f"stream={stream_num} mediamtx_exited code={mediamtx_process.returncode}, restarting",
-                        flush=True,
-                    )
+                    log_event(f"stream={stream_num} mediamtx_exited code={mediamtx_process.returncode}, restarting")
                     publisher.stop()
                     mediamtx_process = start_mediamtx_process(args)
-                    print(f"stream={stream_num} mediamtx_restarted rtsp_url={rtsp_listen_url(args)}", flush=True)
+                    log_event(f"stream={stream_num} mediamtx_restarted rtsp_url={rtsp_listen_url(args)}")
                 config = resolve_bridge_config(args)
                 if args.uid:
-                    print(
+                    log_event(
                         f"stream={stream_num} source_mode=uid turn_host={config.endpoint.host} "
-                        f"turn_port={config.endpoint.port} sid={config.endpoint.sid}",
-                        flush=True,
+                        f"turn_port={config.endpoint.port} sid={config.endpoint.sid}"
                     )
                 else:
-                    print(
+                    log_event(
                         f"stream={stream_num} source_mode=direct host={config.endpoint.host} "
-                        f"port={config.endpoint.port} sid={config.endpoint.sid}",
-                        flush=True,
+                        f"port={config.endpoint.port} sid={config.endpoint.sid}"
                     )
-                run_source_session(config, publisher)
+                run_source_session(config, publisher, availability)
             except KeyboardInterrupt:
                 raise
             except Exception as exc:
+                availability.mark_unavailable()
                 delay = reconnect_delay_for_error(
                     args.reconnect_delay,
                     args.unavailable_stream_reconnect_delay,
                     exc,
                 )
-                print(f"stream={stream_num} source_error={exc}", flush=True)
-                print(f"stream={stream_num} source_retry_in={delay:g}s", flush=True)
+                log_event(f"stream={stream_num} source_error={exc}")
+                log_event(f"stream={stream_num} source_retry_in={delay:g}s")
                 time.sleep(delay)
     except KeyboardInterrupt:
-        print(f"stream={stream_num} bridge_stopped=keyboard_interrupt", flush=True)
+        availability.mark_unavailable()
+        log_event(f"stream={stream_num} bridge_stopped=keyboard_interrupt")
         return 0
     finally:
         publisher.stop()

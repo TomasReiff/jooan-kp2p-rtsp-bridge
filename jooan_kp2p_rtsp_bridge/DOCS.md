@@ -40,6 +40,10 @@ If the device returns `Open stream failed with result=-40`, that channel is usua
 
 The add-on ships with the full initial default camera config and keeps a `/data/options.last_good.json` backup of the last saved add-on configuration. If Home Assistant unexpectedly replaces `options.json` with the packaged defaults or an empty config, the bridge restores that last good copy on startup.
 
+Operational log lines are prefixed with local timestamps so Home Assistant logs are easier to correlate with other services.
+
+Each enabled camera also logs an `availability_daily=` line once per 24-hour reporting window. That percentage reflects how long the bridge was actively publishing that camera during the window, after which the counters reset for the next report.
+
 Example uncapped camera config:
 
 ```yaml

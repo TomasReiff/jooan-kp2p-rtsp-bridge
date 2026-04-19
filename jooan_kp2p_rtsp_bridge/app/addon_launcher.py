@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 
@@ -15,6 +16,11 @@ OPTIONS_BACKUP_PATH = Path("/data/options.last_good.json")
 STARTUP_STAGGER_SECONDS = 1.0
 PROCESS_STOP_TIMEOUT_SECS = 5.0
 MEDIAMTX_STARTUP_TIMEOUT_SECS = 5.0
+
+
+def log_event(message: str) -> None:
+    timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    print(f"{timestamp} {message}", flush=True)
 
 
 @dataclass
@@ -71,7 +77,7 @@ def load_options() -> dict:
         options = load_options_file(OPTIONS_PATH)
     except (OSError, json.JSONDecodeError) as exc:
         if OPTIONS_BACKUP_PATH.exists():
-            print(f"options_warning=load_failed using_backup reason={exc}", flush=True)
+            log_event(f"options_warning=load_failed using_backup reason={exc}")
             return load_options_file(OPTIONS_BACKUP_PATH)
         raise
 
@@ -79,11 +85,11 @@ def load_options() -> dict:
         restored = load_options_file(OPTIONS_BACKUP_PATH)
         if is_default_options(options) and has_persistable_options(restored) and restored != options:
             write_options_file(OPTIONS_PATH, restored)
-            print("options_restore=last_good_backup reason=defaults_reset", flush=True)
+            log_event("options_restore=last_good_backup reason=defaults_reset")
             return restored
         if not has_persistable_options(options) and has_persistable_options(restored):
             write_options_file(OPTIONS_PATH, restored)
-            print("options_restore=last_good_backup reason=empty_config", flush=True)
+            log_event("options_restore=last_good_backup reason=empty_config")
             return restored
 
     if has_persistable_options(options):
@@ -262,7 +268,7 @@ def main() -> int:
     options = load_options()
     cameras = build_camera_configs(options)
     if not cameras:
-        print("error=no enabled cameras found in add-on configuration", flush=True)
+        log_event("error=no enabled cameras found in add-on configuration")
         return 1
 
     processes: list[subprocess.Popen[bytes]] = []
@@ -278,28 +284,24 @@ def main() -> int:
 
     try:
         mediamtx_process = start_shared_mediamtx_process(cameras)
-        print(
-            f"shared_rtsp_server=started rtsp=rtsp://<HA_HOST_IP>:{cameras[0].rtsp_port}/<camera_path>",
-            flush=True,
-        )
+        log_event(f"shared_rtsp_server=started rtsp=rtsp://<HA_HOST_IP>:{cameras[0].rtsp_port}/<camera_path>")
         for camera in cameras:
             command = build_bridge_command(options, camera)
-            print(
+            log_event(
                 f"starting camera={camera.channel + 1} channel={camera.channel} "
-                f"stream_id={camera.stream_id} rtsp=rtsp://[HA_HOST_IP]:{camera.rtsp_port}/{camera.rtsp_path}",
-                flush=True,
+                f"stream_id={camera.stream_id} rtsp=rtsp://[HA_HOST_IP]:{camera.rtsp_port}/{camera.rtsp_path}"
             )
             processes.append(subprocess.Popen(command))
             time.sleep(STARTUP_STAGGER_SECONDS)
 
         while not stopping:
             if mediamtx_process is not None and mediamtx_process.poll() is not None:
-                print(f"error=shared mediamtx exited code={mediamtx_process.returncode}", flush=True)
+                log_event(f"error=shared mediamtx exited code={mediamtx_process.returncode}")
                 return mediamtx_process.returncode or 1
             for process in processes:
                 return_code = process.poll()
                 if return_code is not None:
-                    print(f"error=child process exited code={return_code}", flush=True)
+                    log_event(f"error=child process exited code={return_code}")
                     return return_code or 1
             time.sleep(2)
         return 0

@@ -3,6 +3,7 @@ from __future__ import annotations
 import struct
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -25,6 +26,7 @@ from kp2p_ws_client import (  # noqa: E402
 )
 from rtsp_bridge import (  # noqa: E402
     _DEFAULT_INPUT_FPS,
+    DailyAvailabilityTracker,
     build_packet_timestamp_bsf,
     build_ffmpeg_command,
     build_parser,
@@ -119,6 +121,62 @@ class StreamFailureTests(unittest.TestCase):
 
     def test_missing_source_fps_uses_default(self) -> None:
         self.assertEqual(resolve_input_fps(0), _DEFAULT_INPUT_FPS)
+
+    def test_daily_availability_reports_percentage_and_resets(self) -> None:
+        start = datetime(2026, 4, 19, 0, 0, tzinfo=timezone.utc)
+        timeline = iter(
+            [
+                start,
+                start,
+                start + timedelta(hours=12),
+                start + timedelta(days=1),
+                start + timedelta(days=1),
+                start + timedelta(days=1, hours=12),
+                start + timedelta(days=2),
+            ]
+        )
+        messages: list[str] = []
+        tracker = DailyAvailabilityTracker(3, now_func=lambda: next(timeline), log_func=messages.append)
+
+        tracker.mark_available()
+        tracker.mark_unavailable()
+        tracker.observe()
+        tracker.mark_available()
+        tracker.mark_unavailable()
+        tracker.observe()
+
+        self.assertEqual(len(messages), 2)
+        self.assertIn("stream=3 availability_daily=50.00%", messages[0])
+        self.assertIn("available_seconds=43200 total_seconds=86400", messages[0])
+        self.assertIn("period_start=", messages[0])
+        self.assertIn("period_end=", messages[0])
+        self.assertIn("stream=3 availability_daily=50.00%", messages[1])
+        self.assertIn("available_seconds=43200 total_seconds=86400", messages[1])
+        self.assertIn("period_start=", messages[1])
+        self.assertIn("period_end=", messages[1])
+
+    def test_daily_availability_carries_active_window_into_next_period(self) -> None:
+        start = datetime(2026, 4, 19, 0, 0, tzinfo=timezone.utc)
+        timeline = iter(
+            [
+                start,
+                start,
+                start + timedelta(days=1, hours=6),
+                start + timedelta(days=1, hours=6),
+                start + timedelta(days=2),
+            ]
+        )
+        messages: list[str] = []
+        tracker = DailyAvailabilityTracker(7, now_func=lambda: next(timeline), log_func=messages.append)
+
+        tracker.mark_available()
+        tracker.observe()
+        tracker.mark_unavailable()
+        tracker.observe()
+
+        self.assertEqual(len(messages), 2)
+        self.assertIn("stream=7 availability_daily=100.00%", messages[0])
+        self.assertIn("stream=7 availability_daily=25.00%", messages[1])
 
     def test_find_annexb_start_accepts_immediate_start_code(self) -> None:
         payload = b"\x00\x00\x00\x01\x26\x01"

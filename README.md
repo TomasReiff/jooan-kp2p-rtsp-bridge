@@ -14,6 +14,8 @@ The add-on:
 - connects to Jooan / Juanvision devices over the vendor kp2p websocket protocol
 - supports direct LAN mode and UID / TURN mode
 - restreams configured channels as local RTSP endpoints via FFmpeg
+- prefixes operational log lines with local timestamps
+- logs a per-camera availability percentage once per 24-hour reporting window
 - can be consumed by Frigate, go2rtc, VLC, or other RTSP-capable clients
 
 See `jooan_kp2p_rtsp_bridge/DOCS.md` for setup and configuration details.
