@@ -6,11 +6,12 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable, Optional
+from typing import BinaryIO, Callable, Optional
 
 from kp2p_ws_client import (
     Endpoint,
@@ -45,6 +46,30 @@ def _format_timestamp(value: datetime) -> str:
 
 def log_event(message: str) -> None:
     print(f"{_format_timestamp(_local_now())} {message}", flush=True)
+
+
+def _start_stream_logger(
+    stream: BinaryIO | None,
+    format_message: Callable[[str], str],
+) -> Optional[threading.Thread]:
+    if stream is None:
+        return None
+
+    def drain() -> None:
+        try:
+            while True:
+                raw_line = stream.readline()
+                if not raw_line:
+                    break
+                line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+                if line:
+                    log_event(format_message(line))
+        finally:
+            stream.close()
+
+    thread = threading.Thread(target=drain, name="subprocess-log-drain", daemon=True)
+    thread.start()
+    return thread
 
 
 def _extract_parameter_sets(payload: bytes, is_hevc: bool) -> bytes:
@@ -312,6 +337,7 @@ class FfmpegRtspPublisher:
         self.codec: Optional[str] = None
         self.input_fps: Optional[float] = None
         self.process: Optional[subprocess.Popen[bytes]] = None
+        self._stderr_thread: Optional[threading.Thread] = None
         self.needs_keyframe: bool = True
         # Cached parameter-set NAL units (VPS/SPS/PPS for HEVC, SPS/PPS for H.264).
         # Kept across ffmpeg restarts so that IDR frames arriving without inline
@@ -347,8 +373,12 @@ class FfmpegRtspPublisher:
             command,
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
-            stderr=None,
+            stderr=subprocess.PIPE,
             bufsize=0,
+        )
+        self._stderr_thread = _start_stream_logger(
+            self.process.stderr,
+            lambda line: f"stream={self.stream_num} ffmpeg_stderr={line}",
         )
         self.codec = codec
         self.input_fps = input_fps
@@ -428,6 +458,7 @@ class FfmpegRtspPublisher:
                 except subprocess.TimeoutExpired:
                     pass  # SIGKILL was sent; the OS will reap the process.
         self.process = None
+        self._stderr_thread = None
         self.codec = None
         self.input_fps = None
 
@@ -493,9 +524,13 @@ def start_mediamtx_process(args: argparse.Namespace) -> subprocess.Popen[bytes]:
     config_path.write_text(generate_mediamtx_config(args))
     process: subprocess.Popen[bytes] = subprocess.Popen(
         [args.mediamtx_bin, str(config_path)],
-        stdout=subprocess.DEVNULL,
-        stderr=None,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         bufsize=0,
+    )
+    _start_stream_logger(
+        process.stdout,
+        lambda line: f"stream={args.channel + 1} mediamtx_log={line}",
     )
     # Poll until mediamtx binds to the RTSP port (or fail fast if it exits).
     deadline = time.monotonic() + _MEDIAMTX_STARTUP_TIMEOUT_SECS

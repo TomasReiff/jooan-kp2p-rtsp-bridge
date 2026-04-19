@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import struct
 import sys
 import unittest
@@ -26,6 +27,7 @@ from kp2p_ws_client import (  # noqa: E402
 )
 from rtsp_bridge import (  # noqa: E402
     _DEFAULT_INPUT_FPS,
+    _start_stream_logger,
     DailyAvailabilityTracker,
     build_packet_timestamp_bsf,
     build_ffmpeg_command,
@@ -177,6 +179,23 @@ class StreamFailureTests(unittest.TestCase):
         self.assertEqual(len(messages), 2)
         self.assertIn("stream=7 availability_daily=100.00%", messages[0])
         self.assertIn("stream=7 availability_daily=25.00%", messages[1])
+
+    def test_subprocess_stream_logger_re_emits_lines(self) -> None:
+        messages: list[str] = []
+        original_log_event = sys.modules["rtsp_bridge"].log_event
+        sys.modules["rtsp_bridge"].log_event = messages.append
+        try:
+            thread = _start_stream_logger(
+                io.BytesIO(b"first line\n\nsecond line\r\n"),
+                lambda line: f"ffmpeg_stderr={line}",
+            )
+            self.assertIsNotNone(thread)
+            assert thread is not None
+            thread.join(timeout=1)
+        finally:
+            sys.modules["rtsp_bridge"].log_event = original_log_event
+
+        self.assertEqual(messages, ["ffmpeg_stderr=first line", "ffmpeg_stderr=second line"])
 
     def test_find_annexb_start_accepts_immediate_start_code(self) -> None:
         payload = b"\x00\x00\x00\x01\x26\x01"

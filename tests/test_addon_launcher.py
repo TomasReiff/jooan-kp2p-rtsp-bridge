@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import sys
 import tempfile
@@ -123,6 +124,29 @@ class AddonLauncherOptionsTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "same rtsp_port"):
             addon_launcher.build_shared_mediamtx_config(cameras)
+
+    def test_start_stream_logger_re_emits_lines_with_timestamp_wrapper(self) -> None:
+        messages: list[str] = []
+        original_log_event = addon_launcher.log_event
+        addon_launcher.log_event = messages.append
+        try:
+            thread = addon_launcher.start_stream_logger(
+                io.BytesIO(b"mediamtx ready\nwarning here\n"),
+                lambda line: f"shared_mediamtx_log={line}",
+            )
+            self.assertIsNotNone(thread)
+            assert thread is not None
+            thread.join(timeout=1)
+        finally:
+            addon_launcher.log_event = original_log_event
+
+        self.assertEqual(
+            messages,
+            [
+                "shared_mediamtx_log=mediamtx ready",
+                "shared_mediamtx_log=warning here",
+            ],
+        )
 
 
 if __name__ == "__main__":

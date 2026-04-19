@@ -5,10 +5,12 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import BinaryIO, Callable
 
 
 OPTIONS_PATH = Path("/data/options.json")
@@ -21,6 +23,30 @@ MEDIAMTX_STARTUP_TIMEOUT_SECS = 5.0
 def log_event(message: str) -> None:
     timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
     print(f"{timestamp} {message}", flush=True)
+
+
+def start_stream_logger(
+    stream: BinaryIO | None,
+    format_message: Callable[[str], str],
+) -> threading.Thread | None:
+    if stream is None:
+        return None
+
+    def drain() -> None:
+        try:
+            while True:
+                raw_line = stream.readline()
+                if not raw_line:
+                    break
+                line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+                if line:
+                    log_event(format_message(line))
+        finally:
+            stream.close()
+
+    thread = threading.Thread(target=drain, name="subprocess-log-drain", daemon=True)
+    thread.start()
+    return thread
 
 
 @dataclass
@@ -235,10 +261,11 @@ def start_shared_mediamtx_process(cameras: list[CameraConfig], mediamtx_bin: str
     config_path.write_text(build_shared_mediamtx_config(cameras), encoding="utf-8")
     process: subprocess.Popen[bytes] = subprocess.Popen(
         [mediamtx_bin, str(config_path)],
-        stdout=subprocess.DEVNULL,
-        stderr=None,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         bufsize=0,
     )
+    start_stream_logger(process.stdout, lambda line: f"shared_mediamtx_log={line}")
     deadline = time.monotonic() + MEDIAMTX_STARTUP_TIMEOUT_SECS
     rtsp_port = cameras[0].rtsp_port
     while time.monotonic() < deadline:
