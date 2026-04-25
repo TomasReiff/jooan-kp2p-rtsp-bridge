@@ -1,0 +1,27 @@
+{
+  "use_uid": false,
+  "host": "192.168.1.10",
+  "port": 10000,
+  "uid": "",
+  "username": "admin",
+  "password": "YOUR_PASSWORD",
+  "reconnect_delay": 3,
+  "unavailable_stream_reconnect_delay": 60,
+  "ffmpeg_loglevel": "warning",
+  "cameras": [
+    {
+      "channel": 0,
+      "enabled": true,
+      "stream_id": 1,
+      "rtsp_port": 8554,
+      "rtsp_path": "cam1"
+    },
+    {
+      "channel": 1,
+      "enabled": true,
+      "stream_id": 1,
+      "rtsp_port": 8554,
+      "rtsp_path": "cam2"
+    }
+  ]
+}

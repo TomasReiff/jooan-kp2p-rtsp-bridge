@@ -1,22 +1,23 @@
 # Jooan kp2p RTSP Bridge
 
-This add-on restreams Jooan / Juanvision kp2p camera channels as local RTSP streams that standard RTSP clients can consume.
+This bridge restreams Jooan / Juanvision kp2p camera channels as local RTSP streams that standard RTSP clients can consume.
 
-This is a **Home Assistant add-on**, not a HACS integration. The add-on does the media bridging work and exposes RTSP URLs for downstream consumers.
+This repository ships both a **Home Assistant add-on** and a **plain Docker container**. In both cases the bridge does the media restreaming work and exposes RTSP URLs for downstream consumers.
 
 ## What this add-on does
 
 - Connects to the DVR or camera using the vendor kp2p websocket protocol.
 - Opens one bridge process per enabled camera.
 - Runs a single shared [mediamtx](https://github.com/bluenviron/mediamtx) RTSP relay for all camera paths on one RTSP port.
-- Lets you configure the connection from the Home Assistant add-on UI.
+- Lets you configure the connection from the Home Assistant add-on UI or a mounted JSON config file.
 - Can feed Frigate, go2rtc, VLC, or other RTSP-capable software.
 
 ## Configuration
 
 ### Global options
 
-- Use the Home Assistant add-on **Configuration** UI to edit settings. Do not edit the packaged add-on files directly; updates replace those defaults.
+- In Home Assistant, use the add-on **Configuration** UI to edit settings. Do not edit the packaged add-on files directly; updates replace those defaults.
+- In Docker/Synology mode, mount a JSON file and point `BRIDGE_CONFIG_PATH` at it if you do not use the default path `/config/bridge-config.json`.
 - `use_uid`: Enable this if you want to use the vendor cloud UID / TURN path instead of direct LAN access.
 - `host` / `port`: Direct LAN connection target.
 - `uid`: Device UID for cloud/TURN mode.
@@ -38,7 +39,7 @@ Each item in `cameras` has:
 
 If the device returns `Open stream failed with result=-40`, that channel is usually unavailable on the DVR. The bridge now backs off much longer before retrying that camera so it does not flood the device with failed reconnects.
 
-The add-on ships with the full initial default camera config and keeps a `/data/options.last_good.json` backup of the last saved add-on configuration. If Home Assistant unexpectedly replaces `options.json` with the packaged defaults or an empty config, the bridge restores that last good copy on startup.
+The Home Assistant add-on keeps a `/data/options.last_good.json` backup of the last saved add-on configuration. If Home Assistant unexpectedly replaces `options.json` with the packaged defaults or an empty config, the bridge restores that last good copy on startup.
 
 Operational log lines are prefixed with local timestamps so Home Assistant logs are easier to correlate with other services. That includes relayed FFmpeg and mediamtx subprocess output as well, so warnings from those tools should no longer appear as bare untimestamped lines.
 
@@ -75,7 +76,7 @@ cameras:
 
 ## Consumer configuration
 
-Use the Home Assistant host IP or LAN IP in your RTSP client, **not** `127.0.0.1` unless that client runs in the same container.
+Use the Home Assistant host IP, Synology host IP, or other LAN IP in your RTSP client, **not** `127.0.0.1` unless that client runs in the same container.
 
 Example if this add-on exposes all cameras on shared RTSP port `8554`:
 
@@ -114,7 +115,9 @@ cameras:
 
 ## Install
 
-### Add repository by URL
+### Home Assistant add-on
+
+#### Add repository by URL
 
 1. In Home Assistant, open **Settings -> Add-ons -> Add-on Store**.
 2. Open the three-dot menu and choose **Repositories**.
@@ -130,7 +133,7 @@ https://github.com/TomasReiff/jooan-kp2p-rtsp-bridge
 7. Start the add-on.
 8. Point your RTSP client to the RTSP URLs you configured.
 
-### Local repository install
+#### Local repository install
 
 1. Copy this repository into your Home Assistant local add-ons directory.
 2. Refresh the add-on store.
@@ -138,3 +141,31 @@ https://github.com/TomasReiff/jooan-kp2p-rtsp-bridge
 4. Set your credentials and define the `cameras` list you want to bridge.
 5. Start the add-on.
 6. Point your RTSP client to the RTSP URLs you configured.
+
+### Docker / Synology Container Manager
+
+1. Build the image from the repository root:
+
+```text
+docker build -t jooan-kp2p-rtsp-bridge .
+```
+
+2. Copy `bridge-config.example.json` and edit it with your device settings.
+3. Run the container with a config mount and published RTSP port:
+
+```text
+docker run -d --name jooan-kp2p-rtsp-bridge -p 8554:8554 -v /path/to/bridge-config.json:/config/bridge-config.json:ro -e BRIDGE_PUBLIC_RTSP_HOST=192.168.1.50 jooan-kp2p-rtsp-bridge
+```
+
+4. In Synology Container Manager, use the same image settings:
+   - mount your config file to `/config/bridge-config.json`
+   - publish the RTSP port from the config, typically `8554`
+   - optionally set `BRIDGE_PUBLIC_RTSP_HOST` so startup logs print the correct host IP
+   - bridge networking is fine; host networking is not required for the generic container
+
+The generic container looks for config files in this order:
+
+1. `BRIDGE_CONFIG_PATH`
+2. `/config/bridge-config.json`
+3. `/config/options.json`
+4. `/data/options.json`

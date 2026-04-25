@@ -291,11 +291,10 @@ def terminate_process(process: subprocess.Popen[bytes]) -> None:
         process.wait(timeout=PROCESS_STOP_TIMEOUT_SECS)
 
 
-def main() -> int:
-    options = load_options()
+def run_bridge(options: dict, host_label: str = "<HA_HOST_IP>") -> int:
     cameras = build_camera_configs(options)
     if not cameras:
-        log_event("error=no enabled cameras found in add-on configuration")
+        log_event("error=no enabled cameras found in configuration")
         return 1
 
     processes: list[subprocess.Popen[bytes]] = []
@@ -311,12 +310,12 @@ def main() -> int:
 
     try:
         mediamtx_process = start_shared_mediamtx_process(cameras)
-        log_event(f"shared_rtsp_server=started rtsp=rtsp://<HA_HOST_IP>:{cameras[0].rtsp_port}/<camera_path>")
+        log_event(f"shared_rtsp_server=started rtsp=rtsp://{host_label}:{cameras[0].rtsp_port}/<camera_path>")
         for camera in cameras:
             command = build_bridge_command(options, camera)
             log_event(
                 f"starting camera={camera.channel + 1} channel={camera.channel} "
-                f"stream_id={camera.stream_id} rtsp=rtsp://[HA_HOST_IP]:{camera.rtsp_port}/{camera.rtsp_path}"
+                f"stream_id={camera.stream_id} rtsp=rtsp://{host_label}:{camera.rtsp_port}/{camera.rtsp_path}"
             )
             processes.append(subprocess.Popen(command))
             time.sleep(STARTUP_STAGGER_SECONDS)
@@ -337,6 +336,11 @@ def main() -> int:
             terminate_process(process)
         if mediamtx_process is not None:
             terminate_process(mediamtx_process)
+
+
+def main() -> int:
+    options = load_options()
+    return run_bridge(options)
 
 
 if __name__ == "__main__":

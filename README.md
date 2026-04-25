@@ -1,15 +1,26 @@
 # jooan-kp2p-rtsp-bridge
 
-Home Assistant add-on repository for restreaming Jooan / Juanvision kp2p camera channels as standard RTSP streams.
+Home Assistant add-on and plain Docker packaging for restreaming Jooan / Juanvision kp2p camera channels as standard RTSP streams.
 
 ## Contents
 
 - `repository.yaml` - Home Assistant add-on repository metadata
-- `jooan_kp2p_rtsp_bridge/` - the add-on package
+- `jooan_kp2p_rtsp_bridge/` - the Home Assistant add-on package
+- `Dockerfile` - generic Docker image for Synology Container Manager or plain Docker
+- `bridge-config.example.json` - sample JSON config for generic containers
 
-## Add-on
+## Deployment modes
 
-The add-on:
+This repository supports both:
+
+- a **Home Assistant add-on**
+- a **standard Docker container** suitable for Synology Container Manager
+
+Both packaging modes use the same bridge implementation.
+
+## Bridge behavior
+
+The bridge:
 
 - connects to Jooan / Juanvision devices over the vendor kp2p websocket protocol
 - supports direct LAN mode and UID / TURN mode
@@ -18,7 +29,7 @@ The add-on:
 - logs a per-camera availability percentage once per 24-hour reporting window
 - can be consumed by Frigate, go2rtc, VLC, or other RTSP-capable clients
 
-See `jooan_kp2p_rtsp_bridge/DOCS.md` for setup and configuration details.
+See `jooan_kp2p_rtsp_bridge/DOCS.md` for Home Assistant and Docker/Synology setup details.
 
 ## Repository URL
 
