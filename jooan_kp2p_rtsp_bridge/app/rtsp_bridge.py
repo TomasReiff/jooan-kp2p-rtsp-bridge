@@ -282,6 +282,10 @@ def resolve_input_fps(frame_fps: int) -> float:
     return float(frame_fps) if frame_fps > 0 else _DEFAULT_INPUT_FPS
 
 
+def build_stream_profile(frame: VideoFrame) -> tuple[str, int, int]:
+    return (frame.codec.upper(), frame.width, frame.height)
+
+
 def build_packet_timestamp_bsf(frame_fps: int) -> str:
     input_fps = resolve_input_fps(frame_fps)
     return (
@@ -599,6 +603,9 @@ def run_source_session(
     availability: DailyAvailabilityTracker,
 ) -> None:
     stream_num = publisher.stream_num
+    expected_profile: tuple[str, int, int] | None = None
+    locked_fps: int | None = None
+    last_dropped_profile: tuple[str, int, int] | None = None
     client = Kp2pClient(config.endpoint, timeout=config.timeout)
     try:
         client.connect()
@@ -614,10 +621,25 @@ def run_source_session(
                 continue
             if frame.channel != config.channel:
                 continue
+            frame_profile = build_stream_profile(frame)
+            if expected_profile is not None and frame_profile != expected_profile:
+                if last_dropped_profile != frame_profile:
+                    expected_codec, expected_width, expected_height = expected_profile
+                    got_codec, got_width, got_height = frame_profile
+                    log_event(
+                        f"stream={stream_num} source_frame_dropped reason=profile_mismatch "
+                        f"expected_codec={expected_codec} expected_width={expected_width} expected_height={expected_height} "
+                        f"got_codec={got_codec} got_width={got_width} got_height={got_height}"
+                    )
+                    last_dropped_profile = frame_profile
+                continue
+            last_dropped_profile = None
             if publisher.needs_keyframe:
                 if not publisher.can_publish_keyframe(frame):
                     continue
-            publisher.ensure_started(frame.codec, frame.fps)
+                expected_profile = frame_profile
+                locked_fps = frame.fps
+            publisher.ensure_started(frame.codec, locked_fps if locked_fps is not None else frame.fps)
             if publisher.needs_keyframe:
                 publisher.needs_keyframe = False
                 log_event(

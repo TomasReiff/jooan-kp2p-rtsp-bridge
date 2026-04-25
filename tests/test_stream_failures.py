@@ -12,10 +12,12 @@ APP_DIR = Path(__file__).resolve().parents[1] / "jooan_kp2p_rtsp_bridge" / "app"
 sys.path.insert(0, str(APP_DIR))
 
 from kp2p_ws_client import (  # noqa: E402
+    Endpoint,
     Kp2pStreamOpenError,
     P2P_FRAME_TYPE_LIVE,
     PROC_FRAME_MAGIC,
     PROC_FRAME_TYPE_IFRAME,
+    PROC_FRAME_TYPE_PFRAME,
     VideoFrame,
     convert_length_prefixed_to_annexb,
     detect_codec_from_annexb,
@@ -29,14 +31,17 @@ from kp2p_ws_client import (  # noqa: E402
 from rtsp_bridge import (  # noqa: E402
     _DEFAULT_INPUT_FPS,
     _start_stream_logger,
+    BridgeConfig,
     DailyAvailabilityTracker,
     FfmpegRtspPublisher,
+    build_stream_profile,
     build_packet_timestamp_bsf,
     build_ffmpeg_command,
     build_parser,
     generate_mediamtx_config,
     reconnect_delay_for_error,
     resolve_input_fps,
+    run_source_session,
 )
 
 
@@ -126,6 +131,11 @@ class StreamFailureTests(unittest.TestCase):
     def test_missing_source_fps_uses_default(self) -> None:
         self.assertEqual(resolve_input_fps(0), _DEFAULT_INPUT_FPS)
 
+    def test_build_stream_profile_normalizes_codec_case(self) -> None:
+        frame = VideoFrame("h265", PROC_FRAME_TYPE_IFRAME, 0, 640, 360, 5, 1234, b"")
+
+        self.assertEqual(build_stream_profile(frame), ("H265", 640, 360))
+
     def test_hevc_keyframe_without_parameter_sets_waits_for_publishable_frame(self) -> None:
         args = build_parser().parse_args(["--password", "secret", "--channel", "0"])
         publisher = FfmpegRtspPublisher(args, DailyAvailabilityTracker(1))
@@ -170,6 +180,69 @@ class StreamFailureTests(unittest.TestCase):
         publisher.stop()
 
         self.assertTrue(publisher.can_publish_keyframe(missing_ps))
+
+    def test_run_source_session_drops_mismatched_profile_frames(self) -> None:
+        frames = [
+            VideoFrame("H264", PROC_FRAME_TYPE_IFRAME, 0, 704, 480, 5, 1000, b"\x00\x00\x00\x01\x67\x64\x00\x1f"),
+            VideoFrame("H265", PROC_FRAME_TYPE_IFRAME, 0, 640, 360, 5, 2000, b"\x00\x00\x00\x01\x40\x01\x0c\x01"),
+            VideoFrame("H264", PROC_FRAME_TYPE_PFRAME, 0, 704, 480, 0, 3000, b"\x00\x00\x00\x01\x41\x9a"),
+        ]
+
+        class FakeClient:
+            def __init__(self, endpoint: Endpoint, timeout: float = 10.0) -> None:
+                self.endpoint = endpoint
+                self.timeout = timeout
+                self._frames = iter(frames)
+
+            def connect(self) -> None:
+                pass
+
+            def login(self, username: str, password: str) -> None:
+                pass
+
+            def open_stream(self, channel: int, stream_id: int) -> str:
+                return ""
+
+            def recv_media(self) -> VideoFrame:
+                try:
+                    return next(self._frames)
+                except StopIteration as exc:
+                    raise EOFError("done") from exc
+
+            def close_stream(self, channel: int, stream_id: int) -> None:
+                pass
+
+            def close(self) -> None:
+                pass
+
+        class FakePublisher:
+            def __init__(self) -> None:
+                self.stream_num = 1
+                self.needs_keyframe = True
+                self.started_with: list[tuple[str, int]] = []
+                self.frames_written: list[VideoFrame] = []
+
+            def can_publish_keyframe(self, frame: VideoFrame) -> bool:
+                return frame.frame_type == PROC_FRAME_TYPE_IFRAME
+
+            def ensure_started(self, codec: str, frame_fps: int) -> None:
+                self.started_with.append((codec, frame_fps))
+
+            def write_video_frame(self, frame: VideoFrame) -> None:
+                self.frames_written.append(frame)
+
+        original_client = sys.modules["rtsp_bridge"].Kp2pClient
+        sys.modules["rtsp_bridge"].Kp2pClient = FakeClient
+        publisher = FakePublisher()
+        config = BridgeConfig(Endpoint("127.0.0.1", 10000, 1, 1), "admin", "secret", 0, 1, 30.0)
+        try:
+            with self.assertRaises(EOFError):
+                run_source_session(config, publisher, DailyAvailabilityTracker(1))
+        finally:
+            sys.modules["rtsp_bridge"].Kp2pClient = original_client
+
+        self.assertEqual(publisher.started_with, [("H264", 5), ("H264", 5)])
+        self.assertEqual([frame.codec for frame in publisher.frames_written], ["H264", "H264"])
 
     def test_daily_availability_reports_percentage_and_resets(self) -> None:
         start = datetime(2026, 4, 19, 0, 0, tzinfo=timezone.utc)
