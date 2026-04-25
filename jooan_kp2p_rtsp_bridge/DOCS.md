@@ -144,7 +144,13 @@ https://github.com/TomasReiff/jooan-kp2p-rtsp-bridge
 
 ### Docker / Synology Container Manager
 
-1. Build the image from the repository root:
+1. Either pull the published image:
+
+```text
+docker pull ghcr.io/tomasreiff/jooan-kp2p-rtsp-bridge:latest
+```
+
+Or build the image from the repository root:
 
 ```text
 docker build -t jooan-kp2p-rtsp-bridge .
@@ -154,14 +160,32 @@ docker build -t jooan-kp2p-rtsp-bridge .
 3. Run the container with a config mount and published RTSP port:
 
 ```text
-docker run -d --name jooan-kp2p-rtsp-bridge -p 8554:8554 -v /path/to/bridge-config.json:/config/bridge-config.json:ro -e BRIDGE_PUBLIC_RTSP_HOST=192.168.1.50 jooan-kp2p-rtsp-bridge
+docker run -d --name jooan-kp2p-rtsp-bridge -p 8554:8554 -v /path/to/bridge-config.json:/config/bridge-config.json:ro -e BRIDGE_PUBLIC_RTSP_HOST=192.168.1.50 ghcr.io/tomasreiff/jooan-kp2p-rtsp-bridge:latest
 ```
 
 4. In Synology Container Manager, use the same image settings:
+   - image: `ghcr.io/tomasreiff/jooan-kp2p-rtsp-bridge:latest`
    - mount your config file to `/config/bridge-config.json`
    - publish the RTSP port from the config, typically `8554`
    - optionally set `BRIDGE_PUBLIC_RTSP_HOST` so startup logs print the correct host IP
    - bridge networking is fine; host networking is not required for the generic container
+
+Example Synology Container Manager project YAML:
+
+```yaml
+services:
+  jooan:
+    image: ghcr.io/tomasreiff/jooan-kp2p-rtsp-bridge:latest
+    container_name: jooan
+    restart: unless-stopped
+    environment:
+      BRIDGE_CONFIG_PATH: /config/config.json
+      BRIDGE_PUBLIC_RTSP_HOST: 192.168.1.50
+    ports:
+      - "8554:8554"
+    volumes:
+      - /volumeUSB4/usbshare/docker/jooan/config/config.json:/config/config.json:ro
+```
 
 The generic container looks for config files in this order:
 

@@ -18,6 +18,19 @@ This repository supports both:
 
 Both packaging modes use the same bridge implementation.
 
+## Container image
+
+The generic container image is published to:
+
+```text
+ghcr.io/tomasreiff/jooan-kp2p-rtsp-bridge
+```
+
+Recommended tags:
+
+- `latest` or `main` for the current default-branch build
+- release tags such as `0.5.3` when a GitHub release is published
+
 ## Bridge behavior
 
 The bridge:
