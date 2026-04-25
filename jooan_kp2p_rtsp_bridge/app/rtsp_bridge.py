@@ -343,16 +343,50 @@ class FfmpegRtspPublisher:
         # Kept across ffmpeg restarts so that IDR frames arriving without inline
         # parameter sets can still be decoded after a publisher reset.
         self._parameter_sets: bytes = b""
+        self._parameter_sets_codec: Optional[str] = None
         # Counts how many ffmpeg sessions have been started for this publisher.
         # Used to distinguish the initial session from restarts (retransmissions).
         self._session_count: int = 0
         # Becomes True after the first payload write in the current ffmpeg session.
         self._has_written: bool = False
+        self._waiting_for_parameter_sets_logged: bool = False
 
     @property
     def stream_num(self) -> int:
         """1-based camera/stream number derived from the zero-based channel index."""
         return self.args.channel + 1
+
+    def _reset_parameter_sets(self) -> None:
+        self._parameter_sets = b""
+        self._parameter_sets_codec = None
+
+    def _update_parameter_sets(self, codec: str, payload: bytes) -> bytes:
+        codec = codec.upper()
+        if self._parameter_sets_codec not in (None, codec):
+            self._reset_parameter_sets()
+        ps = _extract_parameter_sets(payload, codec == "H265")
+        if ps:
+            self._parameter_sets = ps
+            self._parameter_sets_codec = codec
+        return ps
+
+    def can_publish_keyframe(self, frame: VideoFrame) -> bool:
+        if frame.frame_type != PROC_FRAME_TYPE_IFRAME:
+            return False
+        codec = frame.codec.upper()
+        if self._update_parameter_sets(codec, frame.payload):
+            self._waiting_for_parameter_sets_logged = False
+            return True
+        if self._parameter_sets and self._parameter_sets_codec == codec:
+            self._waiting_for_parameter_sets_logged = False
+            return True
+        if not self._waiting_for_parameter_sets_logged:
+            log_event(
+                f"stream={self.stream_num} source_keyframe_waiting codec={codec} "
+                "reason=missing_parameter_sets"
+            )
+            self._waiting_for_parameter_sets_logged = True
+        return False
 
     def ensure_started(self, codec: str, frame_fps: int) -> None:
         codec = codec.upper()
@@ -364,9 +398,6 @@ class FfmpegRtspPublisher:
             and self.input_fps == input_fps
         ):
             return
-        if self.codec is not None and self.codec != codec:
-            # Discard stale parameter sets when the codec changes.
-            self._parameter_sets = b""
         self.stop()
         command = build_ffmpeg_command(self.args, codec, frame_fps)
         self.process = subprocess.Popen(
@@ -385,6 +416,7 @@ class FfmpegRtspPublisher:
         self.needs_keyframe = True
         self._session_count += 1
         self._has_written = False
+        self._waiting_for_parameter_sets_logged = False
         log_event(
             f"stream={self.stream_num} ffmpeg_started codec={codec} input_fps={input_fps:g} "
             f"rtsp_url={rtsp_listen_url(self.args)}"
@@ -428,12 +460,8 @@ class FfmpegRtspPublisher:
         """
         payload = frame.payload
         if frame.frame_type == PROC_FRAME_TYPE_IFRAME:
-            is_hevc = frame.codec.upper() == "H265"
-            ps = _extract_parameter_sets(payload, is_hevc)
-            if ps:
-                # Fresher parameter sets – update the cache.
-                self._parameter_sets = ps
-            elif self._parameter_sets:
+            ps = self._update_parameter_sets(frame.codec, payload)
+            if not ps and self._parameter_sets and self._parameter_sets_codec == frame.codec.upper():
                 # IDR arrived without parameter sets; prepend the cached copy.
                 payload = self._parameter_sets + payload
         self.write(payload)
@@ -461,6 +489,7 @@ class FfmpegRtspPublisher:
         self._stderr_thread = None
         self.codec = None
         self.input_fps = None
+        self._waiting_for_parameter_sets_logged = False
 
 
 def _terminate_process(process: subprocess.Popen) -> None:  # type: ignore[type-arg]
@@ -585,10 +614,11 @@ def run_source_session(
                 continue
             if frame.channel != config.channel:
                 continue
+            if publisher.needs_keyframe:
+                if not publisher.can_publish_keyframe(frame):
+                    continue
             publisher.ensure_started(frame.codec, frame.fps)
             if publisher.needs_keyframe:
-                if frame.frame_type != PROC_FRAME_TYPE_IFRAME:
-                    continue
                 publisher.needs_keyframe = False
                 log_event(
                     f"stream={stream_num} source_keyframe=ok codec={frame.codec} width={frame.width} "

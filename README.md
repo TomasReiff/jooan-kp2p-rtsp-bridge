@@ -29,7 +29,7 @@ ghcr.io/tomasreiff/jooan-kp2p-rtsp-bridge
 Recommended tags:
 
 - `latest` or `main` for the current default-branch build
-- release tags such as `0.5.3` when a GitHub release is published
+- release tags such as `0.5.4` when a GitHub release is published
 
 ## Bridge behavior
 

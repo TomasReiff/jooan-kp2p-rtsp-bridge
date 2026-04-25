@@ -16,6 +16,7 @@ from kp2p_ws_client import (  # noqa: E402
     P2P_FRAME_TYPE_LIVE,
     PROC_FRAME_MAGIC,
     PROC_FRAME_TYPE_IFRAME,
+    VideoFrame,
     convert_length_prefixed_to_annexb,
     detect_codec_from_annexb,
     find_annexb_start,
@@ -29,6 +30,7 @@ from rtsp_bridge import (  # noqa: E402
     _DEFAULT_INPUT_FPS,
     _start_stream_logger,
     DailyAvailabilityTracker,
+    FfmpegRtspPublisher,
     build_packet_timestamp_bsf,
     build_ffmpeg_command,
     build_parser,
@@ -123,6 +125,51 @@ class StreamFailureTests(unittest.TestCase):
 
     def test_missing_source_fps_uses_default(self) -> None:
         self.assertEqual(resolve_input_fps(0), _DEFAULT_INPUT_FPS)
+
+    def test_hevc_keyframe_without_parameter_sets_waits_for_publishable_frame(self) -> None:
+        args = build_parser().parse_args(["--password", "secret", "--channel", "0"])
+        publisher = FfmpegRtspPublisher(args, DailyAvailabilityTracker(1))
+        frame = VideoFrame(
+            codec="H265",
+            frame_type=PROC_FRAME_TYPE_IFRAME,
+            channel=0,
+            width=640,
+            height=360,
+            fps=5,
+            timestamp_ms=1234,
+            payload=b"\x00\x00\x00\x01\x26\x01\x02\x03",
+        )
+
+        self.assertFalse(publisher.can_publish_keyframe(frame))
+
+    def test_hevc_cached_parameter_sets_survive_restart(self) -> None:
+        args = build_parser().parse_args(["--password", "secret", "--channel", "0"])
+        publisher = FfmpegRtspPublisher(args, DailyAvailabilityTracker(1))
+        seeded = VideoFrame(
+            codec="H265",
+            frame_type=PROC_FRAME_TYPE_IFRAME,
+            channel=0,
+            width=640,
+            height=360,
+            fps=5,
+            timestamp_ms=1234,
+            payload=b"\x00\x00\x00\x01\x40\x01\x0c\x01\xff\x00\x00\x00\x01\x42\x01\x01\x00\x00\x00\x01\x44\x01\xc0\x00\x00\x00\x01\x26\x01\x02\x03",
+        )
+        missing_ps = VideoFrame(
+            codec="H265",
+            frame_type=PROC_FRAME_TYPE_IFRAME,
+            channel=0,
+            width=640,
+            height=360,
+            fps=5,
+            timestamp_ms=2234,
+            payload=b"\x00\x00\x00\x01\x26\x01\x02\x03",
+        )
+
+        self.assertTrue(publisher.can_publish_keyframe(seeded))
+        publisher.stop()
+
+        self.assertTrue(publisher.can_publish_keyframe(missing_ps))
 
     def test_daily_availability_reports_percentage_and_resets(self) -> None:
         start = datetime(2026, 4, 19, 0, 0, tzinfo=timezone.utc)
